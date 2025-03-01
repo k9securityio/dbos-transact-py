@@ -43,7 +43,7 @@ def default_config() -> ConfigFile:
 
 
 @pytest.fixture()
-def mysql_config() -> ConfigFile:
+def config_mysql() -> ConfigFile:
     return {
         "name": "test-app",
         "language": "python",
@@ -76,8 +76,8 @@ def sys_db(config: ConfigFile) -> Generator[SystemDatabase, Any, None]:
 
 
 @pytest.fixture()
-def sys_db_mysql(mysql_config: ConfigFile) -> Generator[SystemDatabase, Any, None]:
-    sys_db = SystemDatabase(mysql_config)
+def sys_db_mysql(config_mysql: ConfigFile) -> Generator[SystemDatabase, Any, None]:
+    sys_db = SystemDatabase(config_mysql)
     yield sys_db
     sys_db.destroy()
 
@@ -149,6 +149,25 @@ def dbos(
     # If your test is tricky and has a problem with this, use a different
     #   fixture that does not launch.
     dbos = DBOS(config=config)
+    DBOS.launch()
+
+    yield dbos
+    DBOS.destroy(destroy_registry=True)
+
+
+@pytest.fixture()
+def dbos_mysql(
+    config_mysql: ConfigFile, cleanup_test_databases: None
+) -> Generator[DBOS, Any, None]:
+    print(f"DBOS fixture config: {config_mysql}")
+    DBOS.destroy(destroy_registry=True)
+
+    # This launches for test convenience.
+    #    Tests add to running DBOS and then call stuff without adding
+    #     launch themselves.
+    # If your test is tricky and has a problem with this, use a different
+    #   fixture that does not launch.
+    dbos = DBOS(config=config_mysql)
     DBOS.launch()
 
     yield dbos
