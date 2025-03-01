@@ -27,7 +27,7 @@ def default_config() -> ConfigFile:
         "name": "test-app",
         "language": "python",
         "database": {
-            "type": "postgres",
+            "type": "postgresql",
             "hostname": "localhost",
             "port": 5432,
             "username": "postgres",
