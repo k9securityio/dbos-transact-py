@@ -23,6 +23,7 @@ class RuntimeConfig(TypedDict, total=False):
 
 
 class DatabaseConfig(TypedDict, total=False):
+    type: str
     hostname: str
     port: int
     username: str
