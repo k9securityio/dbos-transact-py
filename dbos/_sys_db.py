@@ -21,7 +21,6 @@ from typing import (
 
 import psycopg
 import sqlalchemy as sa
-import sqlalchemy.dialects.mysql as mysql
 import sqlalchemy.dialects.postgresql as pg
 from alembic import command
 from alembic.config import Config

@@ -13,7 +13,7 @@ from sqlalchemy import (
     text,
 )
 
-expr_mysql_epoch_time_millis = "CAST(UNIX_TIMESTAMP(NOW(3)) * 1000 AS SIGNED)"
+from ._mysql import Expressions
 
 
 class SystemSchema:
@@ -38,13 +38,13 @@ class SystemSchema:
             "created_at",
             BigInteger,
             nullable=False,
-            server_default=text(expr_mysql_epoch_time_millis),
+            server_default=text(Expressions.epoch_time_millis_biginteger),
         ),
         Column(
             "updated_at",
             BigInteger,
             nullable=False,
-            server_default=text(expr_mysql_epoch_time_millis),
+            server_default=text(Expressions.epoch_time_millis_biginteger),
         ),
         Column("application_version", Text, nullable=True),
         Column("application_id", Text, nullable=True),
@@ -110,7 +110,7 @@ class SystemSchema:
             "created_at_epoch_ms",
             BigInteger,
             nullable=False,
-            server_default=text(expr_mysql_epoch_time_millis),
+            server_default=text(Expressions.epoch_time_millis_biginteger),
         ),
         Column(
             "message_uuid",
@@ -162,7 +162,7 @@ class SystemSchema:
             "created_at_epoch_ms",
             BigInteger,
             nullable=False,
-            server_default=text(expr_mysql_epoch_time_millis),
+            server_default=text(Expressions.epoch_time_millis_biginteger),
         ),
         Column(
             "started_at_epoch_ms",
