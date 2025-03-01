@@ -43,6 +43,27 @@ def default_config() -> ConfigFile:
 
 
 @pytest.fixture()
+def mysql_config() -> ConfigFile:
+    return {
+        "name": "test-app",
+        "language": "python",
+        "database": {
+            "type": "mysql",
+            "hostname": "localhost",
+            "port": 3306,
+            "username": "root",
+            "password": "root",
+            "app_db_name": "dbostestpy",
+        },
+        "runtimeConfig": {
+            "start": ["python3 main.py"],
+        },
+        "telemetry": {},
+        "env": {},
+    }
+
+
+@pytest.fixture()
 def config() -> ConfigFile:
     return default_config()
 
@@ -50,6 +71,13 @@ def config() -> ConfigFile:
 @pytest.fixture()
 def sys_db(config: ConfigFile) -> Generator[SystemDatabase, Any, None]:
     sys_db = SystemDatabase(config)
+    yield sys_db
+    sys_db.destroy()
+
+
+@pytest.fixture()
+def sys_db_mysql(mysql_config: ConfigFile) -> Generator[SystemDatabase, Any, None]:
+    sys_db = SystemDatabase(mysql_config)
     yield sys_db
     sys_db.destroy()
 
@@ -70,8 +98,12 @@ def postgres_db_engine() -> sa.Engine:
 
 @pytest.fixture()
 def cleanup_test_databases(config: ConfigFile, postgres_db_engine: sa.Engine) -> None:
+    db_type = config["database"]["type"]
     app_db_name = config["database"]["app_db_name"]
     sys_db_name = f"{app_db_name}_dbos_sys"
+
+    if db_type == "mysql":
+        return
 
     with postgres_db_engine.connect() as connection:
         connection.execution_options(isolation_level="AUTOCOMMIT")
@@ -108,6 +140,7 @@ def cleanup_test_databases(config: ConfigFile, postgres_db_engine: sa.Engine) ->
 def dbos(
     config: ConfigFile, cleanup_test_databases: None
 ) -> Generator[DBOS, Any, None]:
+    print(f"DBOS fixture config: {config}")
     DBOS.destroy(destroy_registry=True)
 
     # This launches for test convenience.

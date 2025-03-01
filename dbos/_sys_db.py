@@ -21,6 +21,7 @@ from typing import (
 
 import psycopg
 import sqlalchemy as sa
+import sqlalchemy.dialects.mysql as mysql
 import sqlalchemy.dialects.postgresql as pg
 from alembic import command
 from alembic.config import Config
@@ -184,37 +185,70 @@ class SystemDatabase:
             else config["database"]["app_db_name"] + SystemSchema.sysdb_suffix
         )
 
-        # If the system database does not already exist, create it
-        postgres_db_url = sa.URL.create(
-            "postgresql+psycopg",
-            username=config["database"]["username"],
-            password=config["database"]["password"],
-            host=config["database"]["hostname"],
-            port=config["database"]["port"],
-            database="postgres",
-            # fills the "application_name" column in pg_stat_activity
-            query={"application_name": f"dbos_transact_{GlobalParams.executor_id}"},
-        )
-        engine = sa.create_engine(postgres_db_url)
-        with engine.connect() as conn:
-            conn.execution_options(isolation_level="AUTOCOMMIT")
-            if not conn.execute(
-                sa.text("SELECT 1 FROM pg_database WHERE datname=:db_name"),
-                parameters={"db_name": sysdb_name},
-            ).scalar():
-                conn.execute(sa.text(f"CREATE DATABASE {sysdb_name}"))
-        engine.dispose()
+        if "postgresql" == config["database"]["type"]:
+            # If the system database does not already exist, create it
+            postgres_db_url = sa.URL.create(
+                "postgresql+psycopg",
+                username=config["database"]["username"],
+                password=config["database"]["password"],
+                host=config["database"]["hostname"],
+                port=config["database"]["port"],
+                database="postgres",
+                # fills the "application_name" column in pg_stat_activity
+                query={"application_name": f"dbos_transact_{GlobalParams.executor_id}"},
+            )
+            engine = sa.create_engine(postgres_db_url)
+            with engine.connect() as conn:
+                conn.execution_options(isolation_level="AUTOCOMMIT")
+                if not conn.execute(
+                    sa.text("SELECT 1 FROM pg_database WHERE datname=:db_name"),
+                    parameters={"db_name": sysdb_name},
+                ).scalar():
+                    conn.execute(sa.text(f"CREATE DATABASE {sysdb_name}"))
+            engine.dispose()
 
-        system_db_url = sa.URL.create(
-            "postgresql+psycopg",
-            username=config["database"]["username"],
-            password=config["database"]["password"],
-            host=config["database"]["hostname"],
-            port=config["database"]["port"],
-            database=sysdb_name,
-            # fills the "application_name" column in pg_stat_activity
-            query={"application_name": f"dbos_transact_{GlobalParams.executor_id}"},
-        )
+            system_db_url = sa.URL.create(
+                "postgresql+psycopg",
+                username=config["database"]["username"],
+                password=config["database"]["password"],
+                host=config["database"]["hostname"],
+                port=config["database"]["port"],
+                database=sysdb_name,
+                # fills the "application_name" column in pg_stat_activity
+                query={"application_name": f"dbos_transact_{GlobalParams.executor_id}"},
+            )
+        elif "mysql" == config["database"]["type"]:
+            # pymysql url syntax:
+            # https://docs.sqlalchemy.org/en/20/dialects/mysql.html#module-sqlalchemy.dialects.mysql.pymysql
+            db_url_args = {
+                "drivername": "mysql+pymysql",
+                "username": config["database"]["username"],
+                "password": config["database"]["password"],
+                "host": config["database"]["hostname"],
+                "port": config["database"]["port"],
+            }
+            mysql_db_url = sa.URL.create(**db_url_args)
+            engine = sa.create_engine(mysql_db_url)
+            with engine.connect() as conn:
+                conn.execution_options(isolation_level="AUTOCOMMIT")
+                conn.execute(
+                    sa.text(
+                        f"""
+                    CREATE DATABASE IF NOT EXISTS `{sysdb_name}`
+                    CHARACTER SET utf8mb4
+                    COLLATE utf8mb4_bin ;
+                """
+                    )
+                )
+                dbos_logger.info(f"system database exists: {sysdb_name}")
+            engine.dispose()
+
+            db_url_args["database"] = sysdb_name
+            system_db_url = sa.URL.create(**db_url_args)
+        else:
+            raise RuntimeError(
+                f"unsupported database type: {config['database']['type']}"
+            )
 
         # Create a connection pool for the system database
         self.engine = sa.create_engine(

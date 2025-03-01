@@ -13,6 +13,8 @@ from sqlalchemy import (
     text,
 )
 
+expr_mysql_epoch_time_millis = "CAST(UNIX_TIMESTAMP(NOW(3)) * 1000 AS SIGNED)"
+
 
 class SystemSchema:
     ### System table schema
@@ -36,13 +38,13 @@ class SystemSchema:
             "created_at",
             BigInteger,
             nullable=False,
-            server_default=text("(EXTRACT(epoch FROM now()) * 1000::numeric)::bigint"),
+            server_default=text(expr_mysql_epoch_time_millis),
         ),
         Column(
             "updated_at",
             BigInteger,
             nullable=False,
-            server_default=text("(EXTRACT(epoch FROM now()) * 1000::numeric)::bigint"),
+            server_default=text(expr_mysql_epoch_time_millis),
         ),
         Column("application_version", Text, nullable=True),
         Column("application_id", Text, nullable=True),
@@ -52,7 +54,7 @@ class SystemSchema:
             "recovery_attempts",
             BigInteger,
             nullable=True,
-            server_default=text("'0'::bigint"),
+            server_default=text("0"),
         ),
         Column("queue_name", Text),
         Index("workflow_status_created_at_index", "created_at"),
@@ -108,7 +110,7 @@ class SystemSchema:
             "created_at_epoch_ms",
             BigInteger,
             nullable=False,
-            server_default=text("(EXTRACT(epoch FROM now()) * 1000::numeric)::bigint"),
+            server_default=text(expr_mysql_epoch_time_millis),
         ),
         Column(
             "message_uuid",
@@ -160,7 +162,7 @@ class SystemSchema:
             "created_at_epoch_ms",
             BigInteger,
             nullable=False,
-            server_default=text("(EXTRACT(epoch FROM now()) * 1000::numeric)::bigint"),
+            server_default=text(expr_mysql_epoch_time_millis),
         ),
         Column(
             "started_at_epoch_ms",
