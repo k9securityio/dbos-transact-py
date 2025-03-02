@@ -21,7 +21,7 @@ class ApplicationSchema:
     transaction_outputs = Table(
         "transaction_outputs",
         metadata_obj,
-        Column("workflow_uuid", String(36)),
+        Column("workflow_uuid", String(46)),
         Column("function_id", Integer),
         Column("output", Text, nullable=True),
         Column("error", Text, nullable=True),
