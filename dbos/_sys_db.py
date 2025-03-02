@@ -14,9 +14,7 @@ from typing import (
     Optional,
     Sequence,
     Set,
-    Tuple,
     TypedDict,
-    cast,
 )
 
 import psycopg
@@ -936,8 +934,8 @@ class SystemDatabase:
                     )
                 )
             except DBAPIError as dbapi_error:
-                # Foreign key violation
-                if dbapi_error.orig.sqlstate == "23503":  # type: ignore
+                # Check for foreign key violation
+                if _is_foreign_key_constraint_error(dbapi_error):
                     raise DBOSNonExistentWorkflowError(destination_uuid)
                 raise
             output: OperationResultInternal = {
@@ -1575,3 +1573,19 @@ def reset_system_database(config: ConfigFile) -> None:
     except sa.exc.SQLAlchemyError as e:
         dbos_logger.error(f"Error resetting system database: {str(e)}")
         raise e
+
+
+def _is_foreign_key_constraint_error(dbapi_error: DBAPIError) -> bool:
+    """Check if the given DBAPIError is a foreign key constraint error."""
+
+    return (
+        isinstance(dbapi_error, sa.exc.IntegrityError)
+        and (
+            hasattr(dbapi_error.orig, "sqlstate")  # postgresql
+            and dbapi_error.orig.sqlstate == "23503"  # type: ignore
+        )
+        or (
+            hasattr(dbapi_error.orig, "args")  # mysql
+            and dbapi_error.orig.args[0] == 1452  # type: ignore
+        )
+    )
