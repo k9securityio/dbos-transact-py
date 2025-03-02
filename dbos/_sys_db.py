@@ -21,6 +21,7 @@ from typing import (
 
 import psycopg
 import sqlalchemy as sa
+import sqlalchemy.dialects.mysql as mysql
 import sqlalchemy.dialects.postgresql as pg
 from alembic import command
 from alembic.config import Config
@@ -40,6 +41,7 @@ from ._error import (
 )
 from ._logger import dbos_logger
 from ._registrations import DEFAULT_MAX_RECOVERY_ATTEMPTS
+from ._schemas._mysql import Expressions
 from ._schemas.system_database import SystemSchema
 
 if TYPE_CHECKING:
@@ -183,6 +185,7 @@ class SystemDatabase:
             if "sys_db_name" in config["database"] and config["database"]["sys_db_name"]
             else config["database"]["app_db_name"] + SystemSchema.sysdb_suffix
         )
+        migrations_rel_path = "_migrations"
 
         if "postgresql" == config["database"]["type"]:
             # If the system database does not already exist, create it
@@ -217,6 +220,8 @@ class SystemDatabase:
                 query={"application_name": f"dbos_transact_{GlobalParams.executor_id}"},
             )
         elif "mysql" == config["database"]["type"]:
+            migrations_rel_path = f"{migrations_rel_path}/mysql"
+
             # pymysql url syntax:
             # https://docs.sqlalchemy.org/en/20/dialects/mysql.html#module-sqlalchemy.dialects.mysql.pymysql
             db_url_args = {
@@ -240,6 +245,17 @@ class SystemDatabase:
                     )
                 )
                 dbos_logger.info(f"system database exists: {sysdb_name}")
+                # Create the dbos schema and transaction_outputs table in the application database
+
+            with engine.begin() as conn:
+                # TODO move schema creation somewhere else? I could not figure out
+                # when / how this is normally created or how to use alembic to do that with versioned scripts
+                schema_creation_query = sa.text(
+                    f"CREATE SCHEMA IF NOT EXISTS {SystemSchema.metadata_obj.schema}"
+                )
+                conn.execute(schema_creation_query)
+            SystemSchema.metadata_obj.create_all(engine)
+
             engine.dispose()
 
             db_url_args["database"] = sysdb_name
@@ -256,7 +272,7 @@ class SystemDatabase:
 
         # Run a schema migration for the system database
         migration_dir = os.path.join(
-            os.path.dirname(os.path.realpath(__file__)), "_migrations"
+            os.path.dirname(os.path.realpath(__file__)), migrations_rel_path
         )
         alembic_cfg = Config()
         alembic_cfg.set_main_option("script_location", migration_dir)
@@ -312,8 +328,8 @@ class SystemDatabase:
     ) -> WorkflowStatuses:
         wf_status: WorkflowStatuses = status["status"]
 
-        cmd = (
-            pg.insert(SystemSchema.workflow_status)
+        upsert = (
+            mysql.insert(SystemSchema.workflow_status)
             .values(
                 workflow_uuid=status["workflow_uuid"],
                 status=status["status"],
@@ -334,24 +350,40 @@ class SystemDatabase:
                     1 if wf_status != WorkflowStatusString.ENQUEUED.value else 0
                 ),
             )
-            .on_conflict_do_update(
-                index_elements=["workflow_uuid"],
-                set_=dict(
+            .on_duplicate_key_update(
+                dict(
                     executor_id=status["executor_id"],
                     recovery_attempts=(
                         SystemSchema.workflow_status.c.recovery_attempts + 1
                     ),
-                    updated_at=func.extract("epoch", func.now()) * 1000,
-                ),
+                    updated_at=Expressions.epoch_time_millis_biginteger,
+                )
             )
         )
+        # dbos_logger.info(f"insert_workflow_status upsert: {upsert}")
 
-        cmd = cmd.returning(SystemSchema.workflow_status.c.recovery_attempts, SystemSchema.workflow_status.c.status, SystemSchema.workflow_status.c.name, SystemSchema.workflow_status.c.class_name, SystemSchema.workflow_status.c.config_name, SystemSchema.workflow_status.c.queue_name)  # type: ignore
+        # cmd = cmd.returning(
+        #     SystemSchema.workflow_status.c.recovery_attempts,
+        #     SystemSchema.workflow_status.c.status,
+        #     SystemSchema.workflow_status.c.name, SystemSchema.workflow_status.c.class_name,
+        #     SystemSchema.workflow_status.c.config_name, SystemSchema.workflow_status.c.queue_name
+        # )  # type: ignore
 
         with self.engine.begin() as c:
-            results = c.execute(cmd)
+            results = c.execute(upsert)
+            select = sa.select(
+                SystemSchema.workflow_status.c.recovery_attempts,
+                SystemSchema.workflow_status.c.status,
+                SystemSchema.workflow_status.c.name,
+                SystemSchema.workflow_status.c.class_name,
+                SystemSchema.workflow_status.c.config_name,
+                SystemSchema.workflow_status.c.queue_name,
+            )
+            results = c.execute(select)
 
         row = results.fetchone()
+        # dbos_logger.info(f"insert_workflow_status upserted row: {row}")
+
         if row is not None:
             # Check the started workflow matches the expected name, class_name, config_name, and queue_name
             # A mismatch indicates a workflow starting with the same UUID but different functions, which would throw an exception.
@@ -626,27 +658,37 @@ class SystemDatabase:
         self, workflow_uuid: str, inputs: str, conn: Optional[sa.Connection] = None
     ) -> None:
         cmd = (
-            pg.insert(SystemSchema.workflow_inputs)
+            mysql.insert(SystemSchema.workflow_inputs)
             .values(
                 workflow_uuid=workflow_uuid,
                 inputs=inputs,
             )
-            .on_conflict_do_update(
-                index_elements=["workflow_uuid"],
-                set_=dict(workflow_uuid=SystemSchema.workflow_inputs.c.workflow_uuid),
+            .on_duplicate_key_update(
+                dict(workflow_uuid=SystemSchema.workflow_inputs.c.workflow_uuid),
             )
-            .returning(SystemSchema.workflow_inputs.c.inputs)
+            # .returning(SystemSchema.workflow_inputs.c.inputs)
         )
+        # the pg version returns the inputs to check if they've changed
+        # mysql8 doesn't support returning and those inputs aren't actually used here, so let's skip for now
+        # if conn is not None:
+        #     row = conn.execute(cmd).fetchone()
+        # else:
+        #     with self.engine.begin() as c:
+        #         row = c.execute(cmd).fetchone()
+
+        # if row is not None and row[0] != inputs:
+        #     dbos_logger.warning(
+        #         f"Workflow inputs for {workflow_uuid} changed since the first call! Use the original inputs."
+        #     )
+        #     # TODO: actually changing the input
+
         if conn is not None:
-            row = conn.execute(cmd).fetchone()
+            results = conn.execute(cmd)
         else:
             with self.engine.begin() as c:
-                row = c.execute(cmd).fetchone()
-        if row is not None and row[0] != inputs:
-            dbos_logger.warning(
-                f"Workflow inputs for {workflow_uuid} changed since the first call! Use the original inputs."
-            )
-            # TODO: actually changing the input
+                results = c.execute(cmd)
+        # dbos_logger.info(f"update_workflow_inputs results: {results}")
+
         if workflow_uuid in self._temp_txn_wf_ids:
             # Clean up the single-transaction tracking sets
             self._exported_temp_txn_wf_status.discard(workflow_uuid)
