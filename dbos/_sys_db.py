@@ -378,8 +378,15 @@ class SystemDatabase:
 
         with self.engine.begin() as c:
             results = c.execute(upsert)
-            dbos_logger.info(f"upsert affected rows: {results.rowcount}")
-            if results.rowcount == 1:
+            num_affected_rows = results.rowcount
+            dbos_logger.info(f"upsert affected rows: {num_affected_rows}")
+            # https://dev.mysql.com/doc/refman/8.4/en/insert-on-duplicate.html
+            #
+            # > With ON DUPLICATE KEY UPDATE, the affected-rows value per row is
+            # > 1 if the row is inserted as a new row,
+            # > 2 if an existing row is updated,
+            # > and 0 if an existing row is set to its current values.
+            if 1 <= num_affected_rows <= 2:
                 select = sa.select(
                     SystemSchema.workflow_status.c.recovery_attempts,
                     SystemSchema.workflow_status.c.status,
