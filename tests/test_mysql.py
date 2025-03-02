@@ -8,6 +8,7 @@ import sqlalchemy as sa
 # noinspection PyProtectedMember
 from dbos import DBOS, SetWorkflowID, _workflow_commands
 from dbos._context import get_local_dbos_context
+from dbos._error import DBOSMaxStepRetriesExceeded
 from dbos._schemas.system_database import SystemSchema
 
 # noinspection PyProtectedMember
@@ -366,3 +367,48 @@ def test_temp_workflow(dbos_mysql: DBOS) -> None:
     res = call_step("var2")
     assert res == "var2"
     assert step_counter == 2
+
+
+def test_temp_workflow_errors(dbos_mysql: DBOS) -> None:
+    # copied from test_dbos::test_temp_workflow_errors
+
+    txn_counter: int = 0
+    step_counter: int = 0
+    retried_step_counter: int = 0
+
+    cur_time: str = datetime.datetime.now().isoformat()
+    gwi: GetWorkflowsInput = GetWorkflowsInput()
+    gwi.start_time = cur_time
+
+    @DBOS.transaction()
+    def test_transaction(var2: str) -> str:
+        nonlocal txn_counter
+        txn_counter += 1
+        raise Exception(var2)
+
+    @DBOS.step()
+    def test_step(var: str) -> str:
+        nonlocal step_counter
+        step_counter += 1
+        raise Exception(var)
+
+    @DBOS.step(retries_allowed=True)
+    def test_retried_step(var: str) -> str:
+        nonlocal retried_step_counter
+        retried_step_counter += 1
+        raise Exception(var)
+
+    with pytest.raises(Exception) as exc_info:
+        test_transaction("tval")
+    assert "tval" == str(exc_info.value)
+
+    with pytest.raises(Exception) as exc_info:
+        test_step("cval")
+    assert "cval" == str(exc_info.value)
+
+    with pytest.raises(DBOSMaxStepRetriesExceeded) as exc_info:
+        test_retried_step("rval")
+
+    assert txn_counter == 1
+    assert step_counter == 1
+    assert retried_step_counter == 3
