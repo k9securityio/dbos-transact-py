@@ -1,6 +1,7 @@
 from typing import Optional, TypedDict
 
 import sqlalchemy as sa
+import sqlalchemy.dialects.mysql as mysql
 import sqlalchemy.dialects.postgresql as pg
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
@@ -30,9 +31,10 @@ class ApplicationDatabase:
 
     def __init__(self, config: ConfigFile):
         self.config = config
+        self.db_type = config["database"]["type"]
 
         app_db_name = config["database"]["app_db_name"]
-        if "postgresql" == config["database"]["type"]:
+        if "postgresql" == self.db_type:
             # If the application database does not already exist, create it
             postgres_db_url = sa.URL.create(
                 "postgresql+psycopg",
@@ -61,7 +63,7 @@ class ApplicationDatabase:
                 port=config["database"]["port"],
                 database=app_db_name,
             )
-        elif "mysql" == config["database"]["type"]:
+        elif "mysql" == self.db_type:
             db_url_args = {
                 "drivername": "mysql+pymysql",
                 "username": config["database"]["username"],
@@ -108,10 +110,22 @@ class ApplicationDatabase:
     def destroy(self) -> None:
         self.engine.dispose()
 
-    @staticmethod
+    def _raise_unsupported_db_type(self):
+        raise RuntimeError(
+            f"unsupported database type: {self.db_type} (configured: {self.config['database']['type']})"
+        )
+
     def record_transaction_output(
-        session: Session, output: TransactionResultInternal
+        self, session: Session, output: TransactionResultInternal
     ) -> None:
+        if "postgresql" == self.db_type:
+            self._record_transaction_output_pg(session, output)
+        elif "mysql" == self.db_type:
+            self._record_transaction_output_mysql(session, output)
+        else:
+            self._raise_unsupported_db_type()
+
+    def _record_transaction_output_pg(self, session, output):
         try:
             session.execute(
                 pg.insert(ApplicationSchema.transaction_outputs).values(
@@ -131,7 +145,37 @@ class ApplicationDatabase:
                 raise DBOSWorkflowConflictIDError(output["workflow_uuid"])
             raise
 
+    def _record_transaction_output_mysql(self, session, output):
+        try:
+            session.execute(
+                mysql.insert(ApplicationSchema.transaction_outputs).values(
+                    workflow_uuid=output["workflow_uuid"],
+                    function_id=output["function_id"],
+                    output=output["output"],
+                    error=None,
+                    txn_id=sa.text(
+                        "(SELECT TRX_ID FROM INFORMATION_SCHEMA.INNODB_TRX WHERE TRX_MYSQL_THREAD_ID = CONNECTION_ID())"
+                    ),
+                    txn_snapshot=output["txn_snapshot"],
+                    executor_id=(
+                        output["executor_id"] if output["executor_id"] else None
+                    ),
+                )
+            )
+        except DBAPIError as dbapi_error:
+            if dbapi_error.orig.sqlstate == "23505":  # type: ignore
+                raise DBOSWorkflowConflictIDError(output["workflow_uuid"])
+            raise
+
     def record_transaction_error(self, output: TransactionResultInternal) -> None:
+        if "postgresql" == self.db_type:
+            self._record_transaction_error_pg(output)
+        elif "mysql" == self.db_type:
+            self._record_transaction_error_mysql(output)
+        else:
+            self._raise_unsupported_db_type()
+
+    def _record_transaction_error_pg(self, output):
         try:
             with self.engine.begin() as conn:
                 conn.execute(
@@ -142,6 +186,29 @@ class ApplicationDatabase:
                         error=output["error"],
                         txn_id=sa.text(
                             "(select pg_current_xact_id_if_assigned()::text)"
+                        ),
+                        txn_snapshot=output["txn_snapshot"],
+                        executor_id=(
+                            output["executor_id"] if output["executor_id"] else None
+                        ),
+                    )
+                )
+        except DBAPIError as dbapi_error:
+            if dbapi_error.orig.sqlstate == "23505":  # type: ignore
+                raise DBOSWorkflowConflictIDError(output["workflow_uuid"])
+            raise
+
+    def _record_transaction_error_mysql(self, output):
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(
+                    pg.insert(ApplicationSchema.transaction_outputs).values(
+                        workflow_uuid=output["workflow_uuid"],
+                        function_id=output["function_id"],
+                        output=None,
+                        error=output["error"],
+                        txn_id=sa.text(
+                            "(SELECT TRX_ID FROM INFORMATION_SCHEMA.INNODB_TRX WHERE TRX_MYSQL_THREAD_ID = CONNECTION_ID())"
                         ),
                         txn_snapshot=output["txn_snapshot"],
                         executor_id=(
