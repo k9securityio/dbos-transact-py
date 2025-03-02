@@ -329,10 +329,11 @@ class SystemDatabase:
     ) -> WorkflowStatuses:
         wf_status: WorkflowStatuses = status["status"]
 
+        workflow_uuid = status["workflow_uuid"]
         upsert = (
             mysql.insert(SystemSchema.workflow_status)
             .values(
-                workflow_uuid=status["workflow_uuid"],
+                workflow_uuid=workflow_uuid,
                 status=status["status"],
                 name=status["name"],
                 class_name=status["class_name"],
@@ -383,12 +384,14 @@ class SystemDatabase:
             results = c.execute(select)
 
         row = results.fetchone()
-        # dbos_logger.info(f"insert_workflow_status upserted row: {row}")
 
         if row is not None:
             # Check the started workflow matches the expected name, class_name, config_name, and queue_name
             # A mismatch indicates a workflow starting with the same UUID but different functions, which would throw an exception.
             recovery_attempts: int = row[0]
+            dbos_logger.info(
+                f"workflow {workflow_uuid} status: {wf_status} recovery attempts: {recovery_attempts} max recovery attempts: {max_recovery_attempts}"
+            )
             wf_status = row[1]
             err_msg: Optional[str] = None
             if row[2] != status["name"]:
@@ -403,7 +406,7 @@ class SystemDatabase:
                     f"Workflow already exists in queue: {row[5]}, but the provided queue name is: {status['queue_name']}. The queue is not updated."
                 )
             if err_msg is not None:
-                raise DBOSConflictingWorkflowError(status["workflow_uuid"], err_msg)
+                raise DBOSConflictingWorkflowError(workflow_uuid, err_msg)
 
             # Every time we start executing a workflow (and thus attempt to insert its status), we increment `recovery_attempts` by 1.
             # When this number becomes equal to `maxRetries + 1`, we mark the workflow as `RETRIES_EXCEEDED`.
@@ -411,15 +414,14 @@ class SystemDatabase:
                 with self.engine.begin() as c:
                     c.execute(
                         sa.delete(SystemSchema.workflow_queue).where(
-                            SystemSchema.workflow_queue.c.workflow_uuid
-                            == status["workflow_uuid"]
+                            SystemSchema.workflow_queue.c.workflow_uuid == workflow_uuid
                         )
                     )
                     c.execute(
                         sa.update(SystemSchema.workflow_status)
                         .where(
                             SystemSchema.workflow_status.c.workflow_uuid
-                            == status["workflow_uuid"]
+                            == workflow_uuid
                         )
                         .where(
                             SystemSchema.workflow_status.c.status
@@ -430,9 +432,7 @@ class SystemDatabase:
                             queue_name=None,
                         )
                     )
-                raise DBOSDeadLetterQueueError(
-                    status["workflow_uuid"], max_recovery_attempts
-                )
+                raise DBOSDeadLetterQueueError(workflow_uuid, max_recovery_attempts)
 
         return wf_status
 

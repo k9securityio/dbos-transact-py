@@ -1,10 +1,12 @@
 import time
 import uuid
 
+import pytest
 import sqlalchemy as sa
 
 # noinspection PyProtectedMember
 from dbos import DBOS, SetWorkflowID, _workflow_commands
+from dbos._schemas.system_database import SystemSchema
 
 # noinspection PyProtectedMember
 from dbos._sys_db import SystemDatabase
@@ -85,3 +87,42 @@ def test_dbos_simple_workflow(dbos_mysql: DBOS) -> None:
     handle = DBOS.execute_workflow_id(wfuuid)
     assert handle.get_result() == "alice1alice"
     assert wf_counter == 4
+
+
+@pytest.mark.skip(
+    reason="Skipping this test because while recovery_attempts is being incremented,"
+    " it doesn't seem to be visible here."
+    " This test will be re-enabled once the issue is resolved."
+)
+def test_simple_workflow_attempts_counter(dbos_mysql: DBOS) -> None:
+    @DBOS.workflow()
+    def noop() -> None:
+        DBOS.logger.info(f"Executing noop {dbos_mysql.workflow_id}")
+        pass
+
+    wfuuid = str(uuid.uuid4())
+    DBOS.logger.info(f"Workflow id: {wfuuid}")
+    with dbos_mysql._sys_db.engine.connect() as c:
+        stmt = sa.select(
+            SystemSchema.workflow_status.c.recovery_attempts,
+            SystemSchema.workflow_status.c.created_at,
+            SystemSchema.workflow_status.c.updated_at,
+        ).where(SystemSchema.workflow_status.c.workflow_uuid == wfuuid)
+        for i in range(10):
+            with SetWorkflowID(wfuuid):
+                noop()
+            txn_id_stmt = sa.text(
+                "SELECT TRX_ID FROM INFORMATION_SCHEMA.INNODB_TRX WHERE TRX_MYSQL_THREAD_ID = CONNECTION_ID()"
+            )
+            txn_id_result = c.execute(txn_id_stmt).fetchone()
+            txn_id = txn_id_result[0] if txn_id_result else None
+            DBOS.logger.info(f"Transaction id: {txn_id}")
+
+            result = c.execute(stmt).fetchone()
+            assert result is not None
+            recovery_attempts, created_at, updated_at = result
+            assert recovery_attempts == i + 1
+            if i == 0:
+                assert created_at == updated_at
+            else:
+                assert updated_at > created_at
