@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from ._dbos_config import ConfigFile
 from ._error import DBOSWorkflowConflictIDError
 from ._logger import dbos_logger
+from ._schemas._mysql import Expressions
 from ._schemas.application_database import ApplicationSchema
 
 
@@ -202,14 +203,12 @@ class ApplicationDatabase:
         try:
             with self.engine.begin() as conn:
                 conn.execute(
-                    pg.insert(ApplicationSchema.transaction_outputs).values(
+                    mysql.insert(ApplicationSchema.transaction_outputs).values(
                         workflow_uuid=output["workflow_uuid"],
                         function_id=output["function_id"],
                         output=None,
                         error=output["error"],
-                        txn_id=sa.text(
-                            "(SELECT TRX_ID FROM INFORMATION_SCHEMA.INNODB_TRX WHERE TRX_MYSQL_THREAD_ID = CONNECTION_ID())"
-                        ),
+                        txn_id=sa.text(Expressions.get_current_txid_string),
                         txn_snapshot=output["txn_snapshot"],
                         executor_id=(
                             output["executor_id"] if output["executor_id"] else None
