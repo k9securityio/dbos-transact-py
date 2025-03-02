@@ -245,15 +245,16 @@ class SystemDatabase:
                     )
                 )
                 dbos_logger.info(f"system database exists: {sysdb_name}")
-                # Create the dbos schema and transaction_outputs table in the application database
 
-            with engine.begin() as conn:
-                # TODO move schema creation somewhere else? I could not figure out
-                # when / how this is normally created or how to use alembic to do that with versioned scripts
-                schema_creation_query = sa.text(
-                    f"CREATE SCHEMA IF NOT EXISTS {SystemSchema.metadata_obj.schema}"
-                )
-                conn.execute(schema_creation_query)
+            # In MySQL, a database and a schema are synonymous:
+            # https://dev.mysql.com/doc/refman/8.4/en/glossary.html#glos_schema
+            #
+            # "In MySQL, physically, a schema is synonymous with a database.
+            # You can substitute the keyword SCHEMA instead of DATABASE in MySQL SQL syntax,
+            # for example using CREATE SCHEMA instead of CREATE DATABASE."
+            #
+            # So no need to create a 'schema' only the 'database'.
+
             SystemSchema.metadata_obj.create_all(engine)
 
             engine.dispose()
@@ -356,7 +357,7 @@ class SystemDatabase:
                     recovery_attempts=(
                         SystemSchema.workflow_status.c.recovery_attempts + 1
                     ),
-                    updated_at=Expressions.epoch_time_millis_biginteger,
+                    updated_at=func.now(3) * 1000,
                 )
             )
         )
@@ -444,7 +445,7 @@ class SystemDatabase:
         wf_status: WorkflowStatuses = status["status"]
 
         cmd = (
-            pg.insert(SystemSchema.workflow_status)
+            mysql.insert(SystemSchema.workflow_status)
             .values(
                 workflow_uuid=status["workflow_uuid"],
                 status=status["status"],
@@ -465,16 +466,18 @@ class SystemDatabase:
                     1 if wf_status != WorkflowStatusString.ENQUEUED.value else 0
                 ),
             )
-            .on_conflict_do_update(
-                index_elements=["workflow_uuid"],
-                set_=dict(
+            .on_duplicate_key_update(
+                dict(
                     status=status["status"],
                     output=status["output"],
                     error=status["error"],
-                    updated_at=func.extract("epoch", func.now()) * 1000,
+                    # updated_at=text(Expressions.epoch_time_millis_biginteger),
+                    updated_at=func.now(3) * 1000,
                 ),
             )
         )
+
+        func.extract("epoch", func.now(3)) * 1000
 
         if conn is not None:
             conn.execute(cmd)
@@ -1504,6 +1507,7 @@ class SystemDatabase:
 
 
 def reset_system_database(config: ConfigFile) -> None:
+    # TODO: support resetting MySQL
     sysdb_name = (
         config["database"]["sys_db_name"]
         if "sys_db_name" in config["database"] and config["database"]["sys_db_name"]

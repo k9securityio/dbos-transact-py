@@ -21,10 +21,10 @@ def test_simple_workflow(dbos_mysql: DBOS, sys_db_mysql: SystemDatabase) -> None
 
     # run the workflow
     simple_workflow()
-    # time.sleep(1)
-    #
-    # # get the workflow list
-    # output = _workflow_commands.list_workflows(sys_db)
-    # assert len(output) == 1, f"Expected list length to be 1, but got {len(output)}"
-    #
-    # assert output[0] is not None, "Expected output to be not None"
+    time.sleep(1)
+
+    # get the workflow list
+    output = _workflow_commands.list_workflows(sys_db)
+    assert len(output) == 1, f"Expected list length to be 1, but got {len(output)}"
+
+    assert output[0] is not None, "Expected output to be not None"
