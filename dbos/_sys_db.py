@@ -179,6 +179,7 @@ class SystemDatabase:
 
     def __init__(self, config: ConfigFile):
         self.config = config
+        self.db_type = config["database"]["type"]
 
         sysdb_name = (
             config["database"]["sys_db_name"]
@@ -320,6 +321,9 @@ class SystemDatabase:
         while self._is_flushing_status_buffer or not self._is_buffers_empty:
             dbos_logger.debug("Waiting for system buffers to be exported")
             time.sleep(1)
+
+    def is_notification_listener_enabled(self):
+        return "postgresql" == self.db_type
 
     def insert_workflow_status(
         self,
@@ -1018,6 +1022,7 @@ class SystemDatabase:
         return message
 
     def _notification_listener(self) -> None:
+        # TODO implement a notification subscription system based on polling for MySQL
         while self._run_background_processes:
             try:
                 # since we're using the psycopg connection directly, we need a url without the "+pycopg" suffix
