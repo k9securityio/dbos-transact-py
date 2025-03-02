@@ -563,3 +563,60 @@ def test_workflow_returns_none(dbos_mysql: DBOS) -> None:
     stat = workflow_handles[0].get_status()
     assert stat
     assert stat.recovery_attempts == 3  # 2 calls to test_workflow + 1 recovery attempt
+
+
+def test_recovery_temp_workflow(dbos_mysql: DBOS) -> None:
+    # copied from test_dbos::test_recovery_temp_workflow
+    dbos: DBOS = dbos_mysql
+
+    txn_counter: int = 0
+
+    @DBOS.transaction()
+    def test_transaction(var2: str) -> str:
+        rows = DBOS.sql_session.execute(sa.text("SELECT 1")).fetchall()
+        nonlocal txn_counter
+        txn_counter += 1
+        return var2 + str(rows[0][0])
+
+    cur_time: str = datetime.datetime.now().isoformat()
+    gwi: GetWorkflowsInput = GetWorkflowsInput()
+    gwi.start_time = cur_time
+
+    wfuuid = str(uuid.uuid4())
+    with SetWorkflowID(wfuuid):
+        res = test_transaction("bob")
+        assert res == "bob1"
+
+    dbos._sys_db.wait_for_buffer_flush()
+    wfs = dbos._sys_db.get_workflows(gwi)
+    assert len(wfs.workflow_uuids) == 1
+    assert wfs.workflow_uuids[0] == wfuuid
+
+    wfi = dbos._sys_db.get_workflow_status(wfs.workflow_uuids[0])
+    assert wfi
+    assert wfi["name"].startswith("<temp>")
+
+    # Change the workflow status to pending
+    with dbos._sys_db.engine.begin() as c:
+        c.execute(
+            sa.update(SystemSchema.workflow_status)
+            .values({"status": "PENDING", "name": wfi["name"]})
+            .where(SystemSchema.workflow_status.c.workflow_uuid == wfuuid)
+        )
+
+    # Recovery should execute the workflow again but skip the transaction
+    workflow_handles = DBOS.recover_pending_workflows()
+    assert len(workflow_handles) == 1
+    assert workflow_handles[0].get_result() == "bob1"
+
+    wfs = dbos._sys_db.get_workflows(gwi)
+    assert len(wfs.workflow_uuids) == 1
+    assert wfs.workflow_uuids[0] == wfuuid
+
+    dbos._sys_db.wait_for_buffer_flush()
+    wfi = dbos._sys_db.get_workflow_status(wfs.workflow_uuids[0])
+    assert wfi
+    assert wfi["name"].startswith("<temp>")
+    assert wfi["status"] == "SUCCESS"
+
+    assert txn_counter == 1
