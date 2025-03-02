@@ -14,6 +14,9 @@ from sqlalchemy import (
 
 from ._mysql import Expressions
 
+_col_len_workflow_uuid = 36 + 1 + 9  # len(uuid) + delimiter + up to a billion children
+_col_type_workflow_uuid = String(_col_len_workflow_uuid)
+
 
 class SystemSchema:
     ### System table schema
@@ -23,7 +26,7 @@ class SystemSchema:
     workflow_status = Table(
         "workflow_status",
         metadata_obj,
-        Column("workflow_uuid", String(36), primary_key=True),
+        Column("workflow_uuid", _col_type_workflow_uuid, primary_key=True),
         Column("status", String(20), nullable=True),
         Column("name", String(128), nullable=True),
         Column("authenticated_user", String(32), nullable=True),
@@ -65,7 +68,7 @@ class SystemSchema:
         metadata_obj,
         Column(
             "workflow_uuid",
-            String(36),
+            _col_type_workflow_uuid,
             ForeignKey(
                 "workflow_status.workflow_uuid", onupdate="CASCADE", ondelete="CASCADE"
             ),
@@ -82,7 +85,7 @@ class SystemSchema:
         metadata_obj,
         Column(
             "workflow_uuid",
-            String(36),
+            _col_type_workflow_uuid,
             ForeignKey(
                 "workflow_status.workflow_uuid", onupdate="CASCADE", ondelete="CASCADE"
             ),
@@ -125,7 +128,7 @@ class SystemSchema:
         metadata_obj,
         Column(
             "workflow_uuid",
-            String(36),
+            _col_type_workflow_uuid,
             ForeignKey(
                 "workflow_status.workflow_uuid", onupdate="CASCADE", ondelete="CASCADE"
             ),
@@ -148,7 +151,7 @@ class SystemSchema:
         metadata_obj,
         Column(
             "workflow_uuid",
-            String(36),
+            _col_type_workflow_uuid,
             ForeignKey(
                 "workflow_status.workflow_uuid", onupdate="CASCADE", ondelete="CASCADE"
             ),

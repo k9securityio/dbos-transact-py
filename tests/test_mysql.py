@@ -95,6 +95,7 @@ def test_dbos_simple_workflow(dbos_mysql: DBOS) -> None:
     " This test will be re-enabled once the issue is resolved."
 )
 def test_simple_workflow_attempts_counter(dbos_mysql: DBOS) -> None:
+
     @DBOS.workflow()
     def noop() -> None:
         DBOS.logger.info(f"Executing noop {dbos_mysql.workflow_id}")
@@ -126,3 +127,96 @@ def test_simple_workflow_attempts_counter(dbos_mysql: DBOS) -> None:
                 assert created_at == updated_at
             else:
                 assert updated_at > created_at
+
+
+def test_child_workflow(dbos_mysql: DBOS) -> None:
+    # copied from test_dbos::test_child_workflow
+    dbos: DBOS = dbos_mysql
+
+    txn_counter: int = 0
+    wf_counter: int = 0
+    step_counter: int = 0
+
+    @DBOS.transaction()
+    def test_transaction(var2: str) -> str:
+        rows = DBOS.sql_session.execute(sa.text("SELECT 1")).fetchall()
+        nonlocal txn_counter
+        txn_counter += 1
+        DBOS.logger.info("I'm test_transaction")
+        return var2 + str(rows[0][0])
+
+    @DBOS.step()
+    def test_step(var: str) -> str:
+        nonlocal step_counter
+        step_counter += 1
+        DBOS.logger.info("I'm test_step")
+        return var
+
+    @DBOS.workflow()
+    def test_workflow(var: str, var2: str) -> str:
+        DBOS.logger.info("I'm test_workflow")
+        if len(DBOS.parent_workflow_id):
+            DBOS.logger.info("  This is a child test_workflow")
+            # Note this assertion is only true if child wasn't assigned an ID explicitly
+            assert DBOS.workflow_id.startswith(DBOS.parent_workflow_id)
+        nonlocal wf_counter
+        wf_counter += 1
+        res = test_transaction(var2)
+        res2 = test_step(var)
+        return res + res2
+
+    @DBOS.workflow()
+    def test_workflow_child() -> str:
+        nonlocal wf_counter
+        wf_counter += 1
+        res1 = test_workflow("child1", "child1")
+        return res1
+
+    wf_ac_counter: int = 0
+    txn_ac_counter: int = 0
+
+    @DBOS.workflow()
+    def test_workflow_children() -> str:
+        nonlocal wf_counter
+        wf_counter += 1
+        res1 = test_workflow("child1", "child1")
+        wfh1 = dbos.start_workflow(test_workflow, "child2a", "child2a")
+        wfh2 = dbos.start_workflow(test_workflow, "child2b", "child2b")
+        res2 = wfh1.get_result()
+        res3 = wfh2.get_result()
+        return res1 + res2 + res3
+
+    @DBOS.transaction()
+    def test_transaction_ac(var2: str) -> str:
+        rows = DBOS.sql_session.execute(sa.text("SELECT 1")).fetchall()
+        nonlocal txn_ac_counter
+        txn_ac_counter += 1
+        return var2 + str(rows[0][0])
+
+    @DBOS.workflow()
+    def test_workflow_ac(var: str, var2: str) -> str:
+        DBOS.logger.info("I'm test_workflow assigned child id")
+        assert DBOS.workflow_id == "run_me_just_once"
+        res = test_transaction_ac(var2)
+        return var + res
+
+    @DBOS.workflow()
+    def test_workflow_assignchild() -> str:
+        nonlocal wf_ac_counter
+        wf_ac_counter += 1
+        with SetWorkflowID("run_me_just_once"):
+            res1 = test_workflow_ac("child1", "child1")
+        with SetWorkflowID("run_me_just_once"):
+            wfh = dbos.start_workflow(test_workflow_ac, "child1", "child1")
+            res2 = wfh.get_result()
+        return res1 + res2
+
+    # Test child wf
+    assert test_workflow_child() == "child11child1"
+    assert test_workflow_children() == "child11child1child2a1child2achild2b1child2b"
+
+    # Test child wf with assigned ID
+    assert test_workflow_assignchild() == "child1child11child1child11"
+    assert test_workflow_assignchild() == "child1child11child1child11"
+    assert wf_ac_counter == 2
+    assert txn_ac_counter == 1  # Only ran tx once
