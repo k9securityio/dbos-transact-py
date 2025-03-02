@@ -12,7 +12,7 @@ from dbos._error import DBOSMaxStepRetriesExceeded
 from dbos._schemas.system_database import SystemSchema
 
 # noinspection PyProtectedMember
-from dbos._sys_db import GetWorkflowsInput, SystemDatabase
+from dbos._sys_db import GetWorkflowsInput, SystemDatabase, WorkflowStatusString
 
 
 def test_simple_workflow(dbos_mysql: DBOS, sys_db_mysql: SystemDatabase) -> None:
@@ -731,3 +731,149 @@ def test_start_workflow(dbos_mysql: DBOS) -> None:
         assert not context.is_within_workflow()
     assert txn_counter == 1
     assert wf_counter == 3
+
+
+def test_retrieve_workflow(dbos_mysql: DBOS) -> None:
+    # copied from test_dbos::test_retrieve_workflow
+    dbos: DBOS = dbos_mysql
+
+    @DBOS.workflow()
+    def test_sleep_workflow(secs: float) -> str:
+        dbos.sleep(secs)
+        return DBOS.workflow_id
+
+    @DBOS.workflow()
+    def test_sleep_workthrow(secs: float) -> str:
+        dbos.sleep(secs)
+        raise Exception("Wake Up!")
+
+    dest_uuid = "aaaa"
+    with pytest.raises(Exception) as exc_info:
+        dbos.retrieve_workflow(dest_uuid)
+    pattern = f"Sent to non-existent destination workflow ID: {dest_uuid}"
+    assert pattern in str(exc_info.value)
+
+    # These return
+    sleep_wfh = dbos.start_workflow(test_sleep_workflow, 1.5)
+    istat = sleep_wfh.get_status()
+    assert istat
+    assert istat.status == str(WorkflowStatusString.PENDING.value)
+
+    sleep_pwfh: WorkflowHandle[str] = dbos.retrieve_workflow(sleep_wfh.workflow_id)
+    assert sleep_wfh.workflow_id == sleep_pwfh.workflow_id
+    dbos.logger.info(f"UUID: {sleep_pwfh.get_workflow_id()}")
+    hres = sleep_pwfh.get_result()
+    assert hres == sleep_pwfh.get_workflow_id()
+    dbos.logger.info(f"RES: {hres}")
+    istat = sleep_pwfh.get_status()
+    assert istat
+    assert istat.status == str(WorkflowStatusString.SUCCESS.value)
+
+    assert sleep_wfh.get_result() == sleep_wfh.get_workflow_id()
+    istat = sleep_wfh.get_status()
+    assert istat
+    assert istat.status == str(WorkflowStatusString.SUCCESS.value)
+
+    # These throw
+    sleep_wfh = dbos.start_workflow(test_sleep_workthrow, 1.5)
+    istat = sleep_wfh.get_status()
+    assert istat
+    assert istat.status == str(WorkflowStatusString.PENDING.value)
+    sleep_pwfh = dbos.retrieve_workflow(sleep_wfh.workflow_id)
+    assert sleep_wfh.workflow_id == sleep_pwfh.workflow_id
+
+    with pytest.raises(Exception) as exc_info:
+        sleep_pwfh.get_result()
+    assert str(exc_info.value) == "Wake Up!"
+    istat = sleep_pwfh.get_status()
+    assert istat
+    assert istat.status == str(WorkflowStatusString.ERROR.value)
+
+    with pytest.raises(Exception) as exc_info:
+        sleep_wfh.get_result()
+    assert str(exc_info.value) == "Wake Up!"
+    istat = sleep_wfh.get_status()
+    assert istat
+    assert istat.status == str(WorkflowStatusString.ERROR.value)
+
+
+def test_retrieve_workflow_in_workflow(dbos_mysql: DBOS) -> None:
+    # copied from test_dbos::test_retrieve_workflow_in_workflow
+
+    dbos: DBOS = dbos_mysql
+
+    @DBOS.workflow()
+    def test_sleep_workflow(secs: float) -> str:
+        dbos.sleep(secs)
+        return DBOS.workflow_id
+
+    @DBOS.workflow()
+    def test_workflow_status_a() -> str:
+        with SetWorkflowID("run_this_once_a"):
+            dbos.start_workflow(test_sleep_workflow, 1.5)
+
+        fstat1 = dbos.get_workflow_status("run_this_once_a")
+        assert fstat1
+        fres: str = dbos.retrieve_workflow("run_this_once_a").get_result()
+        fstat2 = dbos.get_workflow_status("run_this_once_a")
+        assert fstat2
+        return fstat1.status + fres + fstat2.status
+
+    @DBOS.workflow()
+    def test_workflow_status_b() -> str:
+        assert DBOS.workflow_id == "parent_b"
+        with SetWorkflowID("run_this_once_b"):
+            wfh = dbos.start_workflow(test_sleep_workflow, 1.5)
+        assert DBOS.workflow_id == "parent_b"
+
+        fstat1 = wfh.get_status()
+        assert fstat1
+        fres = wfh.get_result()
+        dbos._sys_db.wait_for_buffer_flush()  # Wait for status to export.
+        fstat2 = wfh.get_status()
+        assert fstat2
+        return fstat1.status + fres + fstat2.status
+
+    with SetWorkflowID("parent_a"):
+        assert test_workflow_status_a() == "PENDINGrun_this_once_aSUCCESS"
+    with SetWorkflowID("parent_a"):
+        assert test_workflow_status_a() == "PENDINGrun_this_once_aSUCCESS"
+
+    with SetWorkflowID("parent_b"):
+        assert test_workflow_status_b() == "PENDINGrun_this_once_bSUCCESS"
+    with SetWorkflowID("parent_b"):
+        assert test_workflow_status_b() == "PENDINGrun_this_once_bSUCCESS"
+
+    # Test that the number of attempts matches the number of calls
+    stat = dbos.get_workflow_status("parent_a")
+    assert stat
+    assert stat.recovery_attempts == 2
+    stat = dbos.get_workflow_status("parent_b")
+    assert stat
+    assert stat.recovery_attempts == 2
+    stat = dbos.get_workflow_status("run_this_once_a")
+    assert stat
+    assert stat.recovery_attempts == 2
+    stat = dbos.get_workflow_status("run_this_once_b")
+    assert stat
+    assert stat.recovery_attempts == 2
+
+
+def test_sleep(dbos_mysql: DBOS) -> None:
+    # copied from test_dbos::test_sleep
+    dbos: DBOS = dbos_mysql
+
+    @DBOS.workflow()
+    def test_sleep_workflow(secs: float) -> str:
+        dbos.sleep(secs)
+        return DBOS.workflow_id
+
+    start_time = time.time()
+    sleep_uuid = test_sleep_workflow(1.5)
+    assert time.time() - start_time > 1.4
+
+    # Test sleep OAOO, skip sleep
+    start_time = time.time()
+    with SetWorkflowID(sleep_uuid):
+        assert test_sleep_workflow(1.5) == sleep_uuid
+        assert time.time() - start_time < 0.3
