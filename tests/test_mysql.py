@@ -1,3 +1,4 @@
+import datetime
 import time
 import uuid
 
@@ -6,10 +7,11 @@ import sqlalchemy as sa
 
 # noinspection PyProtectedMember
 from dbos import DBOS, SetWorkflowID, _workflow_commands
+from dbos._context import get_local_dbos_context
 from dbos._schemas.system_database import SystemSchema
 
 # noinspection PyProtectedMember
-from dbos._sys_db import SystemDatabase
+from dbos._sys_db import GetWorkflowsInput, SystemDatabase
 
 
 def test_simple_workflow(dbos_mysql: DBOS, sys_db_mysql: SystemDatabase) -> None:
@@ -304,3 +306,63 @@ def test_exception_workflow(dbos_mysql: DBOS) -> None:
         handle.get_result()
     assert "test error" == str(exc_info.value)
     assert wf_counter == 3  # The workflow error is directly returned without running
+
+
+def test_temp_workflow(dbos_mysql: DBOS) -> None:
+    # copied from test_dbos::test_temp_workflow
+    dbos: DBOS = dbos_mysql
+
+    txn_counter: int = 0
+    step_counter: int = 0
+
+    cur_time: str = datetime.datetime.now().isoformat()
+    gwi: GetWorkflowsInput = GetWorkflowsInput()
+    gwi.start_time = cur_time
+
+    @DBOS.transaction(isolation_level="READ COMMITTED")
+    def test_transaction(var2: str) -> str:
+        rows = DBOS.sql_session.execute(sa.text("SELECT 1")).fetchall()
+        nonlocal txn_counter
+        txn_counter += 1
+        return var2 + str(rows[0][0])
+
+    @DBOS.step()
+    def test_step(var: str) -> str:
+        nonlocal step_counter
+        step_counter += 1
+        return var
+
+    @DBOS.step()
+    def call_step(var: str) -> str:
+        return test_step(var)
+
+    assert get_local_dbos_context() is None
+    res = test_transaction("var2")
+    assert res == "var21"
+    assert get_local_dbos_context() is None
+    res = test_step("var")
+    assert res == "var"
+
+    # Flush workflow inputs buffer shouldn't fail due to foreign key violation.
+    # It should properly skip the transaction inputs.
+    dbos._sys_db._flush_workflow_inputs_buffer()
+
+    # Wait for buffers to flush
+    dbos._sys_db.wait_for_buffer_flush()
+    wfs = dbos._sys_db.get_workflows(gwi)
+    assert len(wfs.workflow_uuids) == 2
+
+    wfi1 = dbos._sys_db.get_workflow_status(wfs.workflow_uuids[0])
+    assert wfi1
+    assert wfi1["name"].startswith("<temp>")
+
+    wfi2 = dbos._sys_db.get_workflow_status(wfs.workflow_uuids[1])
+    assert wfi2
+    assert wfi2["name"].startswith("<temp>")
+
+    assert txn_counter == 1
+    assert step_counter == 1
+
+    res = call_step("var2")
+    assert res == "var2"
+    assert step_counter == 2
