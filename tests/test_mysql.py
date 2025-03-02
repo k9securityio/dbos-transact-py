@@ -7,7 +7,7 @@ import sqlalchemy as sa
 
 # noinspection PyProtectedMember
 from dbos import DBOS, ConfigFile, SetWorkflowID, WorkflowHandle, _workflow_commands
-from dbos._context import get_local_dbos_context
+from dbos._context import assert_current_dbos_context, get_local_dbos_context
 from dbos._error import DBOSMaxStepRetriesExceeded
 from dbos._schemas.system_database import SystemSchema
 
@@ -692,3 +692,42 @@ def test_recovery_thread(config_mysql: ConfigFile) -> None:
         except AssertionError:
             time.sleep(1)
     assert success
+
+
+def test_start_workflow(dbos_mysql: DBOS) -> None:
+    # copied from test_dbos::test_start_workflow
+    dbos: DBOS = dbos_mysql
+    txn_counter: int = 0
+    wf_counter: int = 0
+
+    @DBOS.workflow()
+    def test_workflow(var: str, var2: str) -> str:
+        nonlocal wf_counter
+        wf_counter += 1
+        res = test_transaction(var2)
+        return res + var
+
+    @DBOS.transaction()
+    def test_transaction(var2: str) -> str:
+        rows = DBOS.sql_session.execute(sa.text("SELECT 1")).fetchall()
+        nonlocal txn_counter
+        txn_counter += 1
+        return var2 + str(rows[0][0])
+
+    wfuuid = str(uuid.uuid4())
+    with SetWorkflowID(wfuuid):
+        handle = dbos.start_workflow(test_workflow, "bob", "bob")
+        context = assert_current_dbos_context()
+        assert not context.is_within_workflow()
+        assert handle.get_result() == "bob1bob"
+    with SetWorkflowID(wfuuid):
+        handle = dbos.start_workflow(test_workflow, "bob", "bob")
+        context = assert_current_dbos_context()
+        assert not context.is_within_workflow()
+        assert handle.get_result() == "bob1bob"
+    with SetWorkflowID(wfuuid):
+        assert test_workflow("bob", "bob") == "bob1bob"
+        context = assert_current_dbos_context()
+        assert not context.is_within_workflow()
+    assert txn_counter == 1
+    assert wf_counter == 3
