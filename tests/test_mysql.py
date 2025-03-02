@@ -469,3 +469,51 @@ def test_recovery_workflow(dbos_mysql: DBOS) -> None:
     stat = workflow_handles[0].get_status()
     assert stat
     assert stat.recovery_attempts == 2  # original attempt + recovery attempt
+
+
+def test_recovery_workflow_step(dbos_mysql: DBOS) -> None:
+    # copied from test_dbos::test_recovery_workflow_step
+    dbos: DBOS = dbos_mysql
+
+    step_counter: int = 0
+    wf_counter: int = 0
+
+    @DBOS.workflow()
+    def test_workflow(var: str, var2: str) -> str:
+        nonlocal wf_counter
+        wf_counter += 1
+        should_be_none = test_step(var2)
+        assert should_be_none is None
+        return var
+
+    @DBOS.step()
+    def test_step(var2: str) -> None:
+        nonlocal step_counter
+        step_counter += 1
+        print(f"I'm a test_step {var2}!")
+        return
+
+    wfuuid = str(uuid.uuid4())
+    with SetWorkflowID(wfuuid):
+        assert test_workflow("bob", "bob") == "bob"
+
+    dbos._sys_db.wait_for_buffer_flush()
+    # Change the workflow status to pending
+    with dbos._sys_db.engine.begin() as c:
+        c.execute(
+            sa.update(SystemSchema.workflow_status)
+            .values({"status": "PENDING", "name": test_workflow.__qualname__})
+            .where(SystemSchema.workflow_status.c.workflow_uuid == wfuuid)
+        )
+
+    # Recovery should execute the workflow again but skip the transaction
+    workflow_handles = DBOS.recover_pending_workflows()
+    assert len(workflow_handles) == 1
+    assert workflow_handles[0].get_result() == "bob"
+    assert wf_counter == 2
+    assert step_counter == 1
+
+    # Test that there was a recovery attempt of this
+    stat = workflow_handles[0].get_status()
+    assert stat
+    assert stat.recovery_attempts == 2
