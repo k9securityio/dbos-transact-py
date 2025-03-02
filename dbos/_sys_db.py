@@ -835,7 +835,7 @@ class SystemDatabase:
         error = result["error"]
         output = result["output"]
         assert error is None or output is None, "Only one of error or output can be set"
-        sql = pg.insert(SystemSchema.operation_outputs).values(
+        sql = sa.insert(SystemSchema.operation_outputs).values(
             workflow_uuid=result["workflow_uuid"],
             function_id=result["function_id"],
             output=output,
@@ -903,7 +903,7 @@ class SystemDatabase:
 
             try:
                 c.execute(
-                    pg.insert(SystemSchema.notifications).values(
+                    sa.insert(SystemSchema.notifications).values(
                         destination_uuid=destination_uuid,
                         topic=topic,
                         message=_serialization.serialize(message),
