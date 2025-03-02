@@ -368,6 +368,7 @@ class SystemDatabase:
         )
         # dbos_logger.info(f"insert_workflow_status upsert: {upsert}")
 
+        # MySQL does not support RETURNING
         # cmd = cmd.returning(
         #     SystemSchema.workflow_status.c.recovery_attempts,
         #     SystemSchema.workflow_status.c.status,
@@ -377,37 +378,51 @@ class SystemDatabase:
 
         with self.engine.begin() as c:
             results = c.execute(upsert)
-            select = sa.select(
-                SystemSchema.workflow_status.c.recovery_attempts,
-                SystemSchema.workflow_status.c.status,
-                SystemSchema.workflow_status.c.name,
-                SystemSchema.workflow_status.c.class_name,
-                SystemSchema.workflow_status.c.config_name,
-                SystemSchema.workflow_status.c.queue_name,
-            )
-            results = c.execute(select)
+            dbos_logger.info(f"upsert affected rows: {results.rowcount}")
+            if results.rowcount == 1:
+                select = sa.select(
+                    SystemSchema.workflow_status.c.recovery_attempts,
+                    SystemSchema.workflow_status.c.status,
+                    SystemSchema.workflow_status.c.name,
+                    SystemSchema.workflow_status.c.class_name,
+                    SystemSchema.workflow_status.c.config_name,
+                    SystemSchema.workflow_status.c.queue_name,
+                ).where(SystemSchema.workflow_status.c.workflow_uuid == workflow_uuid)
+                results = c.execute(select)
+            else:
+                raise DBOSException(
+                    f"Could not store workflow status for {workflow_uuid}"
+                )
 
         row = results.fetchone()
 
         if row is not None:
             # Check the started workflow matches the expected name, class_name, config_name, and queue_name
             # A mismatch indicates a workflow starting with the same UUID but different functions, which would throw an exception.
-            recovery_attempts: int = row[0]
+            (
+                recovery_attempts,
+                wf_status,
+                wf_name,
+                wf_class_name,
+                wf_config_name,
+                wf_queue_name,
+            ) = (row[0], row[1], row[2], row[3], row[4], row[5])
+
             dbos_logger.info(
                 f"workflow {workflow_uuid} status: {wf_status} recovery attempts: {recovery_attempts} max recovery attempts: {max_recovery_attempts}"
             )
             wf_status = row[1]
             err_msg: Optional[str] = None
-            if row[2] != status["name"]:
-                err_msg = f"Workflow already exists with a different function name: {row[2]}, but the provided function name is: {status['name']}"
-            elif row[3] != status["class_name"]:
-                err_msg = f"Workflow already exists with a different class name: {row[3]}, but the provided class name is: {status['class_name']}"
-            elif row[4] != status["config_name"]:
-                err_msg = f"Workflow already exists with a different config name: {row[4]}, but the provided config name is: {status['config_name']}"
-            elif row[5] != status["queue_name"]:
+            if wf_name != status["name"]:
+                err_msg = f"Workflow already exists with a different function name: {wf_name}, but the provided function name is: {status['name']}"
+            elif wf_class_name != status["class_name"]:
+                err_msg = f"Workflow already exists with a different class name: {wf_class_name}, but the provided class name is: {status['class_name']}"
+            elif wf_config_name != status["config_name"]:
+                err_msg = f"Workflow already exists with a different config name: {wf_config_name}, but the provided config name is: {status['config_name']}"
+            elif wf_queue_name != status["queue_name"]:
                 # This is a warning because a different queue name is not necessarily an error.
                 dbos_logger.warning(
-                    f"Workflow already exists in queue: {row[5]}, but the provided queue name is: {status['queue_name']}. The queue is not updated."
+                    f"Workflow already exists in queue: {wf_queue_name}, but the provided queue name is: {status['queue_name']}. The queue is not updated."
                 )
             if err_msg is not None:
                 raise DBOSConflictingWorkflowError(workflow_uuid, err_msg)
