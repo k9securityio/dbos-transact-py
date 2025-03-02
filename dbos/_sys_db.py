@@ -39,7 +39,6 @@ from ._error import (
 )
 from ._logger import dbos_logger
 from ._registrations import DEFAULT_MAX_RECOVERY_ATTEMPTS
-from ._schemas._mysql import Expressions
 from ._schemas.system_database import SystemSchema
 
 if TYPE_CHECKING:
@@ -996,6 +995,30 @@ class SystemDatabase:
         condition.release()
         self.notifications_map.pop(payload)
 
+        message: Any = self._recv_message(workflow_uuid, function_id, topic)
+
+        self.record_operation_result(
+            {
+                "workflow_uuid": workflow_uuid,
+                "function_id": function_id,
+                "output": _serialization.serialize(
+                    message
+                ),  # None will be serialized to 'null'
+                "error": None,
+            },
+            conn=c,
+        )
+        return message
+
+    def _recv_message(self, workflow_uuid, function_id, topic):
+        if "postgresql" == self.db_type:
+            return self._recv_message_pg(workflow_uuid, function_id, topic)
+        else:
+            raise Exception(
+                f"Cannot receive message for unsupported database type: {self.db_type}"
+            )
+
+    def _recv_message_pg(self, workflow_uuid, function_id, topic) -> Any:
         # Transactionally consume and return the message if it's in the database, otherwise return null.
         with self.engine.begin() as c:
             oldest_entry_cte = (
@@ -1025,20 +1048,10 @@ class SystemDatabase:
                 .returning(SystemSchema.notifications.c.message)
             )
             rows = c.execute(delete_stmt).fetchall()
-            message: Any = None
-            if len(rows) > 0:
-                message = _serialization.deserialize(rows[0][0])
-            self.record_operation_result(
-                {
-                    "workflow_uuid": workflow_uuid,
-                    "function_id": function_id,
-                    "output": _serialization.serialize(
-                        message
-                    ),  # None will be serialized to 'null'
-                    "error": None,
-                },
-                conn=c,
-            )
+        message: Any = None
+        if len(rows) > 0:
+            message = _serialization.deserialize(rows[0][0])
+
         return message
 
     def _notification_listener(self) -> None:
