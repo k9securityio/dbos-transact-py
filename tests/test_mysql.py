@@ -6,7 +6,7 @@ import pytest
 import sqlalchemy as sa
 
 # noinspection PyProtectedMember
-from dbos import DBOS, SetWorkflowID, WorkflowHandle, _workflow_commands
+from dbos import DBOS, ConfigFile, SetWorkflowID, WorkflowHandle, _workflow_commands
 from dbos._context import get_local_dbos_context
 from dbos._error import DBOSMaxStepRetriesExceeded
 from dbos._schemas.system_database import SystemSchema
@@ -620,3 +620,75 @@ def test_recovery_temp_workflow(dbos_mysql: DBOS) -> None:
     assert wfi["status"] == "SUCCESS"
 
     assert txn_counter == 1
+
+
+def test_recovery_thread(config_mysql: ConfigFile) -> None:
+    # copied from test_dbos::test_recovery_thread
+    config: ConfigFile = config_mysql
+
+    wf_counter: int = 0
+    test_var = "dbos"
+
+    DBOS.destroy(destroy_registry=True)
+    dbos = DBOS(config=config)
+
+    @DBOS.workflow()
+    def test_workflow(var: str) -> str:
+        nonlocal wf_counter
+        if var == test_var:
+            wf_counter += 1
+        return var
+
+    DBOS.launch()
+
+    wfuuid = str(uuid.uuid4())
+    with SetWorkflowID(wfuuid):
+        assert test_workflow(test_var) == test_var
+
+    dbos._sys_db.wait_for_buffer_flush()
+    # Change the workflow status to pending
+    dbos._sys_db.update_workflow_status(
+        {
+            "workflow_uuid": wfuuid,
+            "status": "PENDING",
+            "name": test_workflow.__qualname__,
+            "class_name": None,
+            "config_name": None,
+            "output": None,
+            "error": None,
+            "executor_id": None,
+            "app_id": None,
+            "app_version": None,
+            "request": None,
+            "recovery_attempts": None,
+            "authenticated_user": None,
+            "authenticated_roles": None,
+            "assumed_role": None,
+            "queue_name": None,
+            "created_at": None,
+            "updated_at": None,
+        }
+    )
+
+    DBOS.destroy(destroy_registry=True)
+    DBOS(config=config)
+
+    @DBOS.workflow()
+    def test_workflow(var: str) -> str:
+        nonlocal wf_counter
+        if var == test_var:
+            wf_counter += 1
+        return var
+
+    DBOS.launch()
+
+    # Upon re-launch, the background thread should recover the workflow safely.
+    max_retries = 10
+    success = False
+    for i in range(max_retries):
+        try:
+            assert wf_counter == 2
+            success = True
+        except AssertionError:
+            time.sleep(1)
+    assert success
