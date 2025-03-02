@@ -164,9 +164,10 @@ class ApplicationDatabase:
                 )
             )
         except DBAPIError as dbapi_error:
-            if dbapi_error.orig.sqlstate == "23505":  # type: ignore
-                raise DBOSWorkflowConflictIDError(output["workflow_uuid"])
-            raise
+            dbos_logger.warning(
+                f'error recording transaction output: {output["output"]}; dbapi_error: {dbapi_error}'
+            )
+            raise dbapi_error
 
     def record_transaction_error(self, output: TransactionResultInternal) -> None:
         if "postgresql" == self.db_type:
@@ -216,9 +217,10 @@ class ApplicationDatabase:
                     )
                 )
         except DBAPIError as dbapi_error:
-            if dbapi_error.orig.sqlstate == "23505":  # type: ignore
-                raise DBOSWorkflowConflictIDError(output["workflow_uuid"])
-            raise
+            dbos_logger.warning(
+                f'error recording transaction error: {output["error"]}; dbapi_error: {dbapi_error}'
+            )
+            raise dbapi_error
 
     @staticmethod
     def check_transaction_execution(
