@@ -412,3 +412,60 @@ def test_temp_workflow_errors(dbos_mysql: DBOS) -> None:
     assert txn_counter == 1
     assert step_counter == 1
     assert retried_step_counter == 3
+
+
+def test_recovery_workflow(dbos_mysql: DBOS) -> None:
+    dbos: DBOS = dbos_mysql
+
+    txn_counter: int = 0
+    txn_return_none_counter: int = 0
+    wf_counter: int = 0
+
+    @DBOS.workflow()
+    def test_workflow(var: str, var2: str) -> str:
+        nonlocal wf_counter
+        wf_counter += 1
+        res = test_transaction(var2)
+        should_be_none = test_transaction_return_none()
+        assert should_be_none is None
+        return res + var
+
+    @DBOS.transaction()
+    def test_transaction(var2: str) -> str:
+        rows = DBOS.sql_session.execute(sa.text("SELECT 1")).fetchall()
+        nonlocal txn_counter
+        txn_counter += 1
+        return var2 + str(rows[0][0])
+
+    @DBOS.transaction()
+    def test_transaction_return_none() -> None:
+        nonlocal txn_return_none_counter
+        DBOS.sql_session.execute(sa.text("SELECT 1")).fetchall()
+        txn_return_none_counter += 1
+        return
+
+    wfuuid = str(uuid.uuid4())
+    with SetWorkflowID(wfuuid):
+        assert test_workflow("bob", "bob") == "bob1bob"
+
+    dbos._sys_db.wait_for_buffer_flush()
+    # Change the workflow status to pending
+    with dbos._sys_db.engine.begin() as c:
+        c.execute(
+            sa.update(SystemSchema.workflow_status)
+            .values({"status": "PENDING", "name": test_workflow.__qualname__})
+            .where(SystemSchema.workflow_status.c.workflow_uuid == wfuuid)
+        )
+
+    # Recovery should execute the workflow again but skip the transaction
+    workflow_handles = DBOS.recover_pending_workflows()
+    assert len(workflow_handles) == 1
+    assert workflow_handles[0].get_result() == "bob1bob"
+    assert wf_counter == 2
+    assert txn_counter == 1
+    assert txn_return_none_counter == 1
+
+    # Test that there was a recovery attempt of this
+    stat = workflow_handles[0].get_status()
+    assert stat
+    assert stat.recovery_attempts == 2  # original attempt + recovery attempt
