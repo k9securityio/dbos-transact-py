@@ -997,22 +997,26 @@ class SystemDatabase:
 
         message: Any = self._recv_message(workflow_uuid, function_id, topic)
 
-        self.record_operation_result(
-            {
-                "workflow_uuid": workflow_uuid,
-                "function_id": function_id,
-                "output": _serialization.serialize(
-                    message
-                ),  # None will be serialized to 'null'
-                "error": None,
-            },
-            conn=c,
-        )
+        with self.engine.begin() as c:
+            self.record_operation_result(
+                {
+                    "workflow_uuid": workflow_uuid,
+                    "function_id": function_id,
+                    "output": _serialization.serialize(
+                        message
+                    ),  # None will be serialized to 'null'
+                    "error": None,
+                },
+                conn=c,
+            )
+
         return message
 
     def _recv_message(self, workflow_uuid, function_id, topic):
         if "postgresql" == self.db_type:
             return self._recv_message_pg(workflow_uuid, function_id, topic)
+        elif "mysql" == self.db_type:
+            return self._recv_message_mysql(workflow_uuid, function_id, topic)
         else:
             raise Exception(
                 f"Cannot receive message for unsupported database type: {self.db_type}"
@@ -1051,6 +1055,47 @@ class SystemDatabase:
         message: Any = None
         if len(rows) > 0:
             message = _serialization.deserialize(rows[0][0])
+
+        return message
+
+    def _recv_message_mysql(self, workflow_uuid, function_id, topic) -> Any:
+        # Transactionally consume and return the message if it's in the database, otherwise return null.
+        message: Any = None
+
+        with self.engine.begin() as c:
+            select_stmt = (
+                sa.select(
+                    SystemSchema.notifications.c.destination_uuid,
+                    SystemSchema.notifications.c.topic,
+                    SystemSchema.notifications.c.message,
+                    SystemSchema.notifications.c.created_at_epoch_ms,
+                )
+                .where(
+                    SystemSchema.notifications.c.destination_uuid == workflow_uuid,
+                    SystemSchema.notifications.c.topic == topic,
+                )
+                .order_by(SystemSchema.notifications.c.created_at_epoch_ms.asc())
+                .limit(1)
+            )
+            oldest_message_results = c.execute(select_stmt).fetchall()
+
+            if len(oldest_message_results) == 1:
+                dest_uuid, topic, stored_message, created_at_epoch_ms = (
+                    oldest_message_results[0]
+                )
+
+                dbos_logger.info(f"found message to receive: {stored_message}")
+                delete_stmt = sa.delete(SystemSchema.notifications).where(
+                    SystemSchema.notifications.c.destination_uuid == dest_uuid,
+                    SystemSchema.notifications.c.topic == topic,
+                    SystemSchema.notifications.c.created_at_epoch_ms
+                    == created_at_epoch_ms,
+                )
+                delete_results = c.execute(delete_stmt)
+                assert delete_results.rowcount == 1, "Expected 1 row to be deleted"
+
+                if stored_message is not None:
+                    message = _serialization.deserialize(stored_message)
 
         return message
 

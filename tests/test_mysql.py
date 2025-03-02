@@ -877,3 +877,109 @@ def test_sleep(dbos_mysql: DBOS) -> None:
     with SetWorkflowID(sleep_uuid):
         assert test_sleep_workflow(1.5) == sleep_uuid
         assert time.time() - start_time < 0.3
+
+
+@pytest.mark.skip(
+    "Skip because there isn't a proper pub/sub implemenation for MySQL. "
+    "So this test only passes without message latency assertions."
+)
+def test_send_recv(dbos_mysql: DBOS) -> None:
+    # copied from test_dbos::test_send_recv
+    dbos: DBOS = dbos_mysql
+
+    send_counter: int = 0
+    recv_counter: int = 0
+
+    @DBOS.workflow()
+    def test_send_workflow(dest_uuid: str, topic: str) -> str:
+        dbos.send(dest_uuid, "test1")
+        dbos.send(dest_uuid, "test2", topic=topic)
+        dbos.send(dest_uuid, "test3")
+        nonlocal send_counter
+        send_counter += 1
+        return dest_uuid
+
+    @DBOS.workflow()
+    def test_recv_workflow(topic: str) -> str:
+        msg1 = dbos.recv(topic, timeout_seconds=2)
+        msg2 = dbos.recv(timeout_seconds=2)
+        msg3 = dbos.recv(timeout_seconds=2)
+        nonlocal recv_counter
+        recv_counter += 1
+        return "-".join([str(msg1), str(msg2), str(msg3)])
+
+    @DBOS.workflow()
+    def test_recv_timeout(timeout_seconds: float) -> None:
+        msg = dbos.recv(timeout_seconds=timeout_seconds)
+        assert msg is None
+
+    @DBOS.workflow()
+    def test_send_none(dest_uuid: str) -> None:
+        dbos.send(dest_uuid, None)
+
+    dest_uuid = str(uuid.uuid4())
+
+    # Send to non-existent uuid should fail
+    with pytest.raises(Exception) as exc_info:
+        test_send_workflow(dest_uuid, "testtopic")
+    assert f"Sent to non-existent destination workflow ID: {dest_uuid}" in str(
+        exc_info.value
+    )
+
+    with SetWorkflowID(dest_uuid):
+        handle = dbos.start_workflow(test_recv_workflow, "testtopic")
+        assert handle.get_workflow_id() == dest_uuid
+
+    send_uuid = str(uuid.uuid4())
+    with SetWorkflowID(send_uuid):
+        res = test_send_workflow(handle.get_workflow_id(), "testtopic")
+        assert res == dest_uuid
+    begin_time = time.time()
+    assert handle.get_result() == "test2-test1-test3"
+    # duration = time.time() - begin_time
+    # assert duration < 3.0  # Shouldn't take more than 3 seconds to run
+
+    # Test send 'None'
+    none_uuid = str(uuid.uuid4())
+    none_handle = None
+    with SetWorkflowID(none_uuid):
+        none_handle = dbos.start_workflow(test_recv_timeout, 10.0)
+    test_send_none(none_uuid)
+    begin_time = time.time()
+    assert none_handle.get_result() is None
+    # duration = time.time() - begin_time
+    # assert duration < 1.0  # None is from the received message, not from the timeout.
+
+    timeout_uuid = str(uuid.uuid4())
+    with SetWorkflowID(timeout_uuid):
+        begin_time = time.time()
+        timeoutres = test_recv_timeout(1.0)
+        duration = time.time() - begin_time
+        assert duration > 0.7
+        assert timeoutres is None
+
+    # Test OAOO
+    with SetWorkflowID(send_uuid):
+        res = test_send_workflow(handle.get_workflow_id(), "testtopic")
+        assert res == dest_uuid
+        assert send_counter == 2
+
+    with SetWorkflowID(dest_uuid):
+        begin_time = time.time()
+        res = test_recv_workflow("testtopic")
+        duration = time.time() - begin_time
+        assert duration < 3.0
+        assert res == "test2-test1-test3"
+        assert recv_counter == 2
+
+    with SetWorkflowID(timeout_uuid):
+        begin_time = time.time()
+        timeoutres = test_recv_timeout(1.0)
+        duration = time.time() - begin_time
+        assert duration < 0.3
+        assert timeoutres is None
+
+    # Test recv outside of a workflow
+    with pytest.raises(Exception) as exc_info:
+        dbos.recv("test1")
+    assert "recv() must be called from within a workflow" in str(exc_info.value)
