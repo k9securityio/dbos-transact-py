@@ -1297,3 +1297,20 @@ def test_debug_logging(dbos_mysql: DBOS, caplog: pytest.LogCaptureFixture) -> No
 
     # Reset logging
     logging.getLogger("dbos").propagate = original_propagate
+
+
+def test_destroy_semantics(dbos_mysql: DBOS, config_mysql: ConfigFile) -> None:
+    # copied from test_dbos::test_destroy_semantics
+
+    @DBOS.workflow()
+    def test_workflow(var: str) -> str:
+        return var
+
+    var = "test"
+    assert test_workflow(var) == var
+
+    DBOS.destroy()
+    DBOS(config=config_mysql)
+    DBOS.launch()
+
+    assert test_workflow(var) == var
