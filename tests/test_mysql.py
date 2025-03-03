@@ -983,3 +983,41 @@ def test_send_recv(dbos_mysql: DBOS) -> None:
     with pytest.raises(Exception) as exc_info:
         dbos.recv("test1")
     assert "recv() must be called from within a workflow" in str(exc_info.value)
+
+
+def test_send_recv_temp_wf(dbos_mysql: DBOS) -> None:
+    # copied from test_dbos::test_send_recv_temp_wf
+    dbos: DBOS = dbos_mysql
+
+    recv_counter: int = 0
+    cur_time: str = datetime.datetime.now().isoformat()
+    gwi: GetWorkflowsInput = GetWorkflowsInput()
+    gwi.start_time = cur_time
+
+    @DBOS.workflow()
+    def test_send_recv_workflow(topic: str) -> str:
+        msg1 = dbos.recv(topic, timeout_seconds=10)
+        nonlocal recv_counter
+        recv_counter += 1
+        # TODO Set event back
+        return "-".join([str(msg1)])
+
+    dest_uuid = str(uuid.uuid4())
+
+    with SetWorkflowID(dest_uuid):
+        handle = dbos.start_workflow(test_send_recv_workflow, "testtopic")
+        assert handle.get_workflow_id() == dest_uuid
+
+    dbos.send(dest_uuid, "testsend1", "testtopic")
+    assert handle.get_result() == "testsend1"
+
+    wfs = dbos._sys_db.get_workflows(gwi)
+    assert len(wfs.workflow_uuids) == 2
+    assert wfs.workflow_uuids[0] == dest_uuid
+    assert wfs.workflow_uuids[1] != dest_uuid
+
+    wfi = dbos._sys_db.get_workflow_status(wfs.workflow_uuids[1])
+    assert wfi
+    assert wfi["name"] == "<temp>.temp_send_workflow"
+
+    assert recv_counter == 1
