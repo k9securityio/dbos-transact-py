@@ -1,6 +1,7 @@
 import datetime
 import time
 import uuid
+from typing import Optional
 
 import pytest
 import sqlalchemy as sa
@@ -1021,3 +1022,80 @@ def test_send_recv_temp_wf(dbos_mysql: DBOS) -> None:
     assert wfi["name"] == "<temp>.temp_send_workflow"
 
     assert recv_counter == 1
+
+
+def test_set_get_events(dbos_mysql: DBOS) -> None:
+    # copied from test_dbos::test_set_get_events
+    dbos: DBOS = dbos_mysql
+
+    @DBOS.workflow()
+    def test_setevent_workflow() -> None:
+        dbos.set_event("key1", "value1")
+        dbos.set_event("key2", "value2")
+        dbos.set_event("key3", None)
+
+    @DBOS.workflow()
+    def test_getevent_workflow(
+        target_uuid: str, key: str, timeout_seconds: float = 10
+    ) -> Optional[str]:
+        msg = dbos.get_event(target_uuid, key, timeout_seconds)
+        return str(msg) if msg is not None else None
+
+    wfuuid = str(uuid.uuid4())
+    with SetWorkflowID(wfuuid):
+        test_setevent_workflow()
+    with SetWorkflowID(wfuuid):
+        test_setevent_workflow()
+
+    value1 = test_getevent_workflow(wfuuid, "key1")
+    assert value1 == "value1"
+
+    value2 = test_getevent_workflow(wfuuid, "key2")
+    assert value2 == "value2"
+
+    # Run getEvent outside of a workflow
+    value1 = dbos.get_event(wfuuid, "key1")
+    assert value1 == "value1"
+
+    value2 = dbos.get_event(wfuuid, "key2")
+    assert value2 == "value2"
+
+    begin_time = time.time()
+    value3 = test_getevent_workflow(wfuuid, "key3")
+    assert value3 is None
+    duration = time.time() - begin_time
+    assert duration < 1  # None is from the event not from the timeout
+
+    # Test OAOO
+    timeout_uuid = str(uuid.uuid4())
+    with SetWorkflowID(timeout_uuid):
+        begin_time = time.time()
+        res = test_getevent_workflow("non-existent-uuid", "key1", 1.0)
+        duration = time.time() - begin_time
+        assert duration > 0.7
+        assert res is None
+
+    with SetWorkflowID(timeout_uuid):
+        begin_time = time.time()
+        res = test_getevent_workflow("non-existent-uuid", "key1", 1.0)
+        duration = time.time() - begin_time
+        assert duration < 0.3
+        assert res is None
+
+    # No OAOO for getEvent outside of a workflow
+    begin_time = time.time()
+    res = dbos.get_event("non-existent-uuid", "key1", 1.0)
+    duration = time.time() - begin_time
+    assert duration > 0.7
+    assert res is None
+
+    begin_time = time.time()
+    res = dbos.get_event("non-existent-uuid", "key1", 1.0)
+    duration = time.time() - begin_time
+    assert duration > 0.7
+    assert res is None
+
+    # Test setEvent outside of a workflow
+    with pytest.raises(Exception) as exc_info:
+        dbos.set_event("key1", "value1")
+    assert "set_event() must be called from within a workflow" in str(exc_info.value)

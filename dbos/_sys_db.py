@@ -1217,8 +1217,10 @@ class SystemDatabase:
             self.record_operation_result(output, conn=c)
 
     def _insert_event(self, c, workflow_uuid, key, message):
-        if self.db_type == "postgresql":
+        if "postgresql" == self.db_type:
             self._insert_event_pg(c, workflow_uuid, key, message)
+        elif "mysql" == self.db_type:
+            self._insert_event_mysql(c, workflow_uuid, key, message)
         else:
             raise Exception(
                 f"Cannot insert event for unsupported database type: {self.db_type}"
@@ -1235,6 +1237,19 @@ class SystemDatabase:
             .on_conflict_do_update(
                 index_elements=["workflow_uuid", "key"],
                 set_={"value": _serialization.serialize(message)},
+            )
+        )
+
+    def _insert_event_mysql(self, c, workflow_uuid, key, message):
+        c.execute(
+            mysql.insert(SystemSchema.workflow_events)
+            .values(
+                workflow_uuid=workflow_uuid,
+                key=key,
+                value=_serialization.serialize(message),
+            )
+            .on_duplicate_key_update(
+                {"value": _serialization.serialize(message)},
             )
         )
 
