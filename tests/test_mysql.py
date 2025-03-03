@@ -11,7 +11,7 @@ import sqlalchemy as sa
 # noinspection PyProtectedMember
 from dbos import DBOS, ConfigFile, SetWorkflowID, WorkflowHandle, _workflow_commands
 from dbos._context import assert_current_dbos_context, get_local_dbos_context
-from dbos._error import DBOSMaxStepRetriesExceeded
+from dbos._error import DBOSConflictingRegistrationError, DBOSMaxStepRetriesExceeded
 from dbos._schemas.system_database import SystemSchema
 
 # noinspection PyProtectedMember
@@ -1314,3 +1314,18 @@ def test_destroy_semantics(dbos_mysql: DBOS, config_mysql: ConfigFile) -> None:
     DBOS.launch()
 
     assert test_workflow(var) == var
+
+
+def test_double_decoration(dbos_mysql: DBOS) -> None:
+    # copied from test_dbos::test_double_decoration
+    with pytest.raises(
+        DBOSConflictingRegistrationError,
+        match="is already registered with a conflicting function type",
+    ):
+
+        @DBOS.step()
+        @DBOS.transaction()
+        def my_function() -> None:
+            pass
+
+        my_function()
