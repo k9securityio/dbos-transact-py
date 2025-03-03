@@ -1206,18 +1206,8 @@ class SystemDatabase:
             else:
                 dbos_logger.debug(f"Running set_event, id: {function_id}, key: {key}")
 
-            c.execute(
-                pg.insert(SystemSchema.workflow_events)
-                .values(
-                    workflow_uuid=workflow_uuid,
-                    key=key,
-                    value=_serialization.serialize(message),
-                )
-                .on_conflict_do_update(
-                    index_elements=["workflow_uuid", "key"],
-                    set_={"value": _serialization.serialize(message)},
-                )
-            )
+            self._insert_event(c, workflow_uuid, key, message)
+
             output: OperationResultInternal = {
                 "workflow_uuid": workflow_uuid,
                 "function_id": function_id,
@@ -1225,6 +1215,28 @@ class SystemDatabase:
                 "error": None,
             }
             self.record_operation_result(output, conn=c)
+
+    def _insert_event(self, c, workflow_uuid, key, message):
+        if self.db_type == "postgresql":
+            self._insert_event_pg(c, workflow_uuid, key, message)
+        else:
+            raise Exception(
+                f"Cannot insert event for unsupported database type: {self.db_type}"
+            )
+
+    def _insert_event_pg(self, c, workflow_uuid, key, message):
+        c.execute(
+            pg.insert(SystemSchema.workflow_events)
+            .values(
+                workflow_uuid=workflow_uuid,
+                key=key,
+                value=_serialization.serialize(message),
+            )
+            .on_conflict_do_update(
+                index_elements=["workflow_uuid", "key"],
+                set_={"value": _serialization.serialize(message)},
+            )
+        )
 
     def get_event(
         self,
