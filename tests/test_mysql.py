@@ -1,4 +1,5 @@
 import datetime
+import threading
 import time
 import uuid
 from typing import Optional
@@ -1186,3 +1187,27 @@ def test_nonserializable_values(dbos_mysql: DBOS) -> None:
     with pytest.raises(Exception) as exc_info:
         test_bad_wf4("d")
     assert "data item should not be a function" in str(exc_info.value)
+
+
+def test_multi_set_event(dbos_mysql: DBOS) -> None:
+    event = threading.Event()
+
+    wfid = str(uuid.uuid4())
+
+    @DBOS.workflow()
+    def test_setevent_workflow() -> None:
+        assert DBOS.workflow_id == wfid
+        DBOS.set_event("key", "value1")
+        event.wait()
+        DBOS.set_event("key", "value2")
+
+    with SetWorkflowID(wfid):
+        handle = DBOS.start_workflow(test_setevent_workflow)
+
+    # shorten timeout because mysql impl doesn't have proper pub/sub
+    # so rely on timeout to unblock
+    short_timeout = 1
+    assert DBOS.get_event(wfid, "key", timeout_seconds=short_timeout) == "value1"
+    event.set()
+    assert handle.get_result() == None
+    assert DBOS.get_event(wfid, "key", timeout_seconds=short_timeout) == "value2"
