@@ -27,11 +27,38 @@ def default_config() -> ConfigFile:
         "name": "test-app",
         "language": "python",
         "database": {
+            "type": "postgresql",
             "hostname": "localhost",
             "port": 5432,
             "username": "postgres",
             "password": os.environ["PGPASSWORD"],
             "app_db_name": "dbostestpy",
+        },
+        "runtimeConfig": {
+            "start": ["python3 main.py"],
+        },
+        "telemetry": {},
+        "env": {},
+    }
+
+
+def default_config_mysql() -> ConfigFile:
+    return {
+        "name": "test-app",
+        "language": "python",
+        "database": {
+            "type": "mysql",
+            "hostname": "localhost",
+            "port": 3306,
+            "username": "root",
+            "password": "root",
+            # Synchronize app and sys db names to what is defined in their respective Schema objects
+            # 1. A MySQL 'database' and 'schema' are synonymous.
+            # 2. SystemSchema and ApplicationSchema both have a hardcoded 'dbos' schema
+            #
+            # So we need to explicitly configure where the schema/databases are to what is defined in the *Schema
+            "app_db_name": "dbos",
+            "sys_db_name": "dbos",
         },
         "runtimeConfig": {
             "start": ["python3 main.py"],
@@ -47,8 +74,20 @@ def config() -> ConfigFile:
 
 
 @pytest.fixture()
+def config_mysql() -> ConfigFile:
+    return default_config_mysql()
+
+
+@pytest.fixture()
 def sys_db(config: ConfigFile) -> Generator[SystemDatabase, Any, None]:
     sys_db = SystemDatabase(config)
+    yield sys_db
+    sys_db.destroy()
+
+
+@pytest.fixture()
+def sys_db_mysql(config_mysql: ConfigFile) -> Generator[SystemDatabase, Any, None]:
+    sys_db = SystemDatabase(config_mysql)
     yield sys_db
     sys_db.destroy()
 
@@ -67,10 +106,27 @@ def postgres_db_engine() -> sa.Engine:
     return sa.create_engine(postgres_db_url)
 
 
+@pytest.fixture(scope="session")
+def mysql_db_engine() -> sa.Engine:
+    cfg = default_config_mysql()
+    mysql_db_url = sa.URL.create(
+        "mysql+pymysql",
+        username=cfg["database"]["username"],
+        password=cfg["database"]["password"],
+        host=cfg["database"]["hostname"],
+        port=cfg["database"]["port"],
+    )
+    return sa.create_engine(mysql_db_url)
+
+
 @pytest.fixture()
 def cleanup_test_databases(config: ConfigFile, postgres_db_engine: sa.Engine) -> None:
+    db_type = config["database"]["type"]
     app_db_name = config["database"]["app_db_name"]
     sys_db_name = f"{app_db_name}_dbos_sys"
+
+    if db_type != "postgresql":
+        raise Exception("Test database cleanup only supported for postgresql")
 
     with postgres_db_engine.connect() as connection:
         connection.execution_options(isolation_level="AUTOCOMMIT")
@@ -97,6 +153,26 @@ def cleanup_test_databases(config: ConfigFile, postgres_db_engine: sa.Engine) ->
         )
         connection.execute(sa.text(f"DROP DATABASE IF EXISTS {sys_db_name}"))
 
+
+@pytest.fixture()
+def cleanup_test_databases_mysql(
+    config_mysql: ConfigFile, mysql_db_engine: sa.Engine
+) -> None:
+    config = config_mysql
+    db_type = config["database"]["type"]
+    app_db_name = config["database"]["app_db_name"]
+    sys_db_name = f"{app_db_name}_dbos_sys"
+
+    if db_type != "mysql":
+        raise Exception("Test database cleanup only supported for mysql")
+    else:
+        print(f"Cleaning up test databases for mysql: {(sys_db_name, app_db_name)}")
+
+    with mysql_db_engine.connect() as connection:
+        connection.execution_options(isolation_level="AUTOCOMMIT")
+        connection.execute(sa.text(f"DROP DATABASE IF EXISTS {app_db_name}"))
+        connection.execute(sa.text(f"DROP DATABASE IF EXISTS {sys_db_name}"))
+
     # Clean up environment variables
     os.environ.pop("DBOS__VMID") if "DBOS__VMID" in os.environ else None
     os.environ.pop("DBOS__APPVERSION") if "DBOS__APPVERSION" in os.environ else None
@@ -107,6 +183,7 @@ def cleanup_test_databases(config: ConfigFile, postgres_db_engine: sa.Engine) ->
 def dbos(
     config: ConfigFile, cleanup_test_databases: None
 ) -> Generator[DBOS, Any, None]:
+    print(f"DBOS fixture config: {config}")
     DBOS.destroy(destroy_registry=True)
 
     # This launches for test convenience.
@@ -115,6 +192,25 @@ def dbos(
     # If your test is tricky and has a problem with this, use a different
     #   fixture that does not launch.
     dbos = DBOS(config=config)
+    DBOS.launch()
+
+    yield dbos
+    DBOS.destroy(destroy_registry=True)
+
+
+@pytest.fixture()
+def dbos_mysql(
+    config_mysql: ConfigFile, cleanup_test_databases_mysql: None
+) -> Generator[DBOS, Any, None]:
+    print(f"DBOS fixture config: {config_mysql}")
+    DBOS.destroy(destroy_registry=True)
+
+    # This launches for test convenience.
+    #    Tests add to running DBOS and then call stuff without adding
+    #     launch themselves.
+    # If your test is tricky and has a problem with this, use a different
+    #   fixture that does not launch.
+    dbos = DBOS(config=config_mysql)
     DBOS.launch()
 
     yield dbos

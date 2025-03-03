@@ -20,6 +20,10 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "type": {
+            "type": "string",
+            "description": "The type of database: postgresql or mysql"
+          },
           "hostname": {
             "type": "string",
             "description": "The hostname or IP address of the application database"

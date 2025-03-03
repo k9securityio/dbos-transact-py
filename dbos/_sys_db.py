@@ -14,13 +14,12 @@ from typing import (
     Optional,
     Sequence,
     Set,
-    Tuple,
     TypedDict,
-    cast,
 )
 
 import psycopg
 import sqlalchemy as sa
+import sqlalchemy.dialects.mysql as mysql
 import sqlalchemy.dialects.postgresql as pg
 from alembic import command
 from alembic.config import Config
@@ -177,44 +176,93 @@ class SystemDatabase:
 
     def __init__(self, config: ConfigFile):
         self.config = config
+        self.db_type = config["database"]["type"]
 
         sysdb_name = (
             config["database"]["sys_db_name"]
             if "sys_db_name" in config["database"] and config["database"]["sys_db_name"]
             else config["database"]["app_db_name"] + SystemSchema.sysdb_suffix
         )
+        migrations_rel_path = "_migrations"
 
-        # If the system database does not already exist, create it
-        postgres_db_url = sa.URL.create(
-            "postgresql+psycopg",
-            username=config["database"]["username"],
-            password=config["database"]["password"],
-            host=config["database"]["hostname"],
-            port=config["database"]["port"],
-            database="postgres",
-            # fills the "application_name" column in pg_stat_activity
-            query={"application_name": f"dbos_transact_{GlobalParams.executor_id}"},
-        )
-        engine = sa.create_engine(postgres_db_url)
-        with engine.connect() as conn:
-            conn.execution_options(isolation_level="AUTOCOMMIT")
-            if not conn.execute(
-                sa.text("SELECT 1 FROM pg_database WHERE datname=:db_name"),
-                parameters={"db_name": sysdb_name},
-            ).scalar():
-                conn.execute(sa.text(f"CREATE DATABASE {sysdb_name}"))
-        engine.dispose()
+        if "postgresql" == config["database"]["type"]:
+            # If the system database does not already exist, create it
+            postgres_db_url = sa.URL.create(
+                "postgresql+psycopg",
+                username=config["database"]["username"],
+                password=config["database"]["password"],
+                host=config["database"]["hostname"],
+                port=config["database"]["port"],
+                database="postgres",
+                # fills the "application_name" column in pg_stat_activity
+                query={"application_name": f"dbos_transact_{GlobalParams.executor_id}"},
+            )
+            engine = sa.create_engine(postgres_db_url)
+            with engine.connect() as conn:
+                conn.execution_options(isolation_level="AUTOCOMMIT")
+                if not conn.execute(
+                    sa.text("SELECT 1 FROM pg_database WHERE datname=:db_name"),
+                    parameters={"db_name": sysdb_name},
+                ).scalar():
+                    conn.execute(sa.text(f"CREATE DATABASE {sysdb_name}"))
+            engine.dispose()
 
-        system_db_url = sa.URL.create(
-            "postgresql+psycopg",
-            username=config["database"]["username"],
-            password=config["database"]["password"],
-            host=config["database"]["hostname"],
-            port=config["database"]["port"],
-            database=sysdb_name,
-            # fills the "application_name" column in pg_stat_activity
-            query={"application_name": f"dbos_transact_{GlobalParams.executor_id}"},
-        )
+            system_db_url = sa.URL.create(
+                "postgresql+psycopg",
+                username=config["database"]["username"],
+                password=config["database"]["password"],
+                host=config["database"]["hostname"],
+                port=config["database"]["port"],
+                database=sysdb_name,
+                # fills the "application_name" column in pg_stat_activity
+                query={"application_name": f"dbos_transact_{GlobalParams.executor_id}"},
+            )
+        elif "mysql" == config["database"]["type"]:
+            migrations_rel_path = f"{migrations_rel_path}/mysql"
+
+            # pymysql url syntax:
+            # https://docs.sqlalchemy.org/en/20/dialects/mysql.html#module-sqlalchemy.dialects.mysql.pymysql
+            db_url_args = {
+                "drivername": "mysql+pymysql",
+                "username": config["database"]["username"],
+                "password": config["database"]["password"],
+                "host": config["database"]["hostname"],
+                "port": config["database"]["port"],
+            }
+            mysql_db_url = sa.URL.create(**db_url_args)
+            engine = sa.create_engine(mysql_db_url)
+            with engine.connect() as conn:
+                conn.execution_options(isolation_level="AUTOCOMMIT")
+                conn.execute(
+                    sa.text(
+                        f"""
+                    CREATE DATABASE IF NOT EXISTS `{sysdb_name}`
+                    CHARACTER SET utf8mb4
+                    COLLATE utf8mb4_bin ;
+                """
+                    )
+                )
+                dbos_logger.info(f"system database exists: {sysdb_name}")
+
+            # In MySQL, a database and a schema are synonymous:
+            # https://dev.mysql.com/doc/refman/8.4/en/glossary.html#glos_schema
+            #
+            # "In MySQL, physically, a schema is synonymous with a database.
+            # You can substitute the keyword SCHEMA instead of DATABASE in MySQL SQL syntax,
+            # for example using CREATE SCHEMA instead of CREATE DATABASE."
+            #
+            # So no need to create a 'schema' only the 'database'.
+
+            SystemSchema.metadata_obj.create_all(engine)
+
+            engine.dispose()
+
+            db_url_args["database"] = sysdb_name
+            system_db_url = sa.URL.create(**db_url_args)
+        else:
+            raise RuntimeError(
+                f"unsupported database type: {config['database']['type']}"
+            )
 
         # Create a connection pool for the system database
         self.engine = sa.create_engine(
@@ -223,7 +271,7 @@ class SystemDatabase:
 
         # Run a schema migration for the system database
         migration_dir = os.path.join(
-            os.path.dirname(os.path.realpath(__file__)), "_migrations"
+            os.path.dirname(os.path.realpath(__file__)), migrations_rel_path
         )
         alembic_cfg = Config()
         alembic_cfg.set_main_option("script_location", migration_dir)
@@ -271,6 +319,9 @@ class SystemDatabase:
             dbos_logger.debug("Waiting for system buffers to be exported")
             time.sleep(1)
 
+    def is_notification_listener_enabled(self):
+        return "postgresql" == self.db_type
+
     def insert_workflow_status(
         self,
         status: WorkflowStatusInternal,
@@ -279,10 +330,11 @@ class SystemDatabase:
     ) -> WorkflowStatuses:
         wf_status: WorkflowStatuses = status["status"]
 
-        cmd = (
-            pg.insert(SystemSchema.workflow_status)
+        workflow_uuid = status["workflow_uuid"]
+        upsert = (
+            mysql.insert(SystemSchema.workflow_status)
             .values(
-                workflow_uuid=status["workflow_uuid"],
+                workflow_uuid=workflow_uuid,
                 status=status["status"],
                 name=status["name"],
                 class_name=status["class_name"],
@@ -301,43 +353,83 @@ class SystemDatabase:
                     1 if wf_status != WorkflowStatusString.ENQUEUED.value else 0
                 ),
             )
-            .on_conflict_do_update(
-                index_elements=["workflow_uuid"],
-                set_=dict(
+            .on_duplicate_key_update(
+                dict(
                     executor_id=status["executor_id"],
                     recovery_attempts=(
                         SystemSchema.workflow_status.c.recovery_attempts + 1
                     ),
-                    updated_at=func.extract("epoch", func.now()) * 1000,
-                ),
+                    updated_at=func.now(3) * 1000,
+                )
             )
         )
+        # dbos_logger.info(f"insert_workflow_status upsert: {upsert}")
 
-        cmd = cmd.returning(SystemSchema.workflow_status.c.recovery_attempts, SystemSchema.workflow_status.c.status, SystemSchema.workflow_status.c.name, SystemSchema.workflow_status.c.class_name, SystemSchema.workflow_status.c.config_name, SystemSchema.workflow_status.c.queue_name)  # type: ignore
+        # MySQL does not support RETURNING
+        # cmd = cmd.returning(
+        #     SystemSchema.workflow_status.c.recovery_attempts,
+        #     SystemSchema.workflow_status.c.status,
+        #     SystemSchema.workflow_status.c.name, SystemSchema.workflow_status.c.class_name,
+        #     SystemSchema.workflow_status.c.config_name, SystemSchema.workflow_status.c.queue_name
+        # )  # type: ignore
 
         with self.engine.begin() as c:
-            results = c.execute(cmd)
+            results = c.execute(upsert)
+            num_affected_rows = results.rowcount
+            dbos_logger.info(f"upsert affected rows: {num_affected_rows}")
+            # https://dev.mysql.com/doc/refman/8.4/en/insert-on-duplicate.html
+            #
+            # > With ON DUPLICATE KEY UPDATE, the affected-rows value per row is
+            # > 1 if the row is inserted as a new row,
+            # > 2 if an existing row is updated,
+            # > and 0 if an existing row is set to its current values.
+            if 1 <= num_affected_rows <= 2:
+                select = sa.select(
+                    SystemSchema.workflow_status.c.recovery_attempts,
+                    SystemSchema.workflow_status.c.status,
+                    SystemSchema.workflow_status.c.name,
+                    SystemSchema.workflow_status.c.class_name,
+                    SystemSchema.workflow_status.c.config_name,
+                    SystemSchema.workflow_status.c.queue_name,
+                ).where(SystemSchema.workflow_status.c.workflow_uuid == workflow_uuid)
+                results = c.execute(select)
+            else:
+                raise DBOSException(
+                    f"Could not store workflow status for {workflow_uuid}"
+                )
 
         row = results.fetchone()
+
         if row is not None:
             # Check the started workflow matches the expected name, class_name, config_name, and queue_name
             # A mismatch indicates a workflow starting with the same UUID but different functions, which would throw an exception.
-            recovery_attempts: int = row[0]
+            (
+                recovery_attempts,
+                wf_status,
+                wf_name,
+                wf_class_name,
+                wf_config_name,
+                wf_queue_name,
+            ) = (row[0], row[1], row[2], row[3], row[4], row[5])
+
+            dbos_logger.info(
+                f"workflow {workflow_uuid} status: {wf_status} recovery attempts: {recovery_attempts} max recovery attempts: {max_recovery_attempts}"
+            )
             wf_status = row[1]
             err_msg: Optional[str] = None
-            if row[2] != status["name"]:
-                err_msg = f"Workflow already exists with a different function name: {row[2]}, but the provided function name is: {status['name']}"
-            elif row[3] != status["class_name"]:
-                err_msg = f"Workflow already exists with a different class name: {row[3]}, but the provided class name is: {status['class_name']}"
-            elif row[4] != status["config_name"]:
-                err_msg = f"Workflow already exists with a different config name: {row[4]}, but the provided config name is: {status['config_name']}"
-            elif row[5] != status["queue_name"]:
+            if wf_name != status["name"]:
+                err_msg = f"Workflow already exists with a different function name: {wf_name}, but the provided function name is: {status['name']}"
+            elif wf_class_name != status["class_name"]:
+                err_msg = f"Workflow already exists with a different class name: {wf_class_name}, but the provided class name is: {status['class_name']}"
+            elif wf_config_name != status["config_name"]:
+                err_msg = f"Workflow already exists with a different config name: {wf_config_name}, but the provided config name is: {status['config_name']}"
+            elif wf_queue_name != status["queue_name"]:
                 # This is a warning because a different queue name is not necessarily an error.
                 dbos_logger.warning(
-                    f"Workflow already exists in queue: {row[5]}, but the provided queue name is: {status['queue_name']}. The queue is not updated."
+                    f"Workflow already exists in queue: {wf_queue_name}, but the provided queue name is: {status['queue_name']}. The queue is not updated."
                 )
             if err_msg is not None:
-                raise DBOSConflictingWorkflowError(status["workflow_uuid"], err_msg)
+                raise DBOSConflictingWorkflowError(workflow_uuid, err_msg)
 
             # Every time we start executing a workflow (and thus attempt to insert its status), we increment `recovery_attempts` by 1.
             # When this number becomes equal to `maxRetries + 1`, we mark the workflow as `RETRIES_EXCEEDED`.
@@ -345,15 +437,14 @@ class SystemDatabase:
                 with self.engine.begin() as c:
                     c.execute(
                         sa.delete(SystemSchema.workflow_queue).where(
-                            SystemSchema.workflow_queue.c.workflow_uuid
-                            == status["workflow_uuid"]
+                            SystemSchema.workflow_queue.c.workflow_uuid == workflow_uuid
                         )
                     )
                     c.execute(
                         sa.update(SystemSchema.workflow_status)
                         .where(
                             SystemSchema.workflow_status.c.workflow_uuid
-                            == status["workflow_uuid"]
+                            == workflow_uuid
                         )
                         .where(
                             SystemSchema.workflow_status.c.status
@@ -364,9 +455,7 @@ class SystemDatabase:
                             queue_name=None,
                         )
                     )
-                raise DBOSDeadLetterQueueError(
-                    status["workflow_uuid"], max_recovery_attempts
-                )
+                raise DBOSDeadLetterQueueError(workflow_uuid, max_recovery_attempts)
 
         return wf_status
 
@@ -379,7 +468,7 @@ class SystemDatabase:
         wf_status: WorkflowStatuses = status["status"]
 
         cmd = (
-            pg.insert(SystemSchema.workflow_status)
+            mysql.insert(SystemSchema.workflow_status)
             .values(
                 workflow_uuid=status["workflow_uuid"],
                 status=status["status"],
@@ -400,16 +489,18 @@ class SystemDatabase:
                     1 if wf_status != WorkflowStatusString.ENQUEUED.value else 0
                 ),
             )
-            .on_conflict_do_update(
-                index_elements=["workflow_uuid"],
-                set_=dict(
+            .on_duplicate_key_update(
+                dict(
                     status=status["status"],
                     output=status["output"],
                     error=status["error"],
-                    updated_at=func.extract("epoch", func.now()) * 1000,
+                    # updated_at=text(Expressions.epoch_time_millis_biginteger),
+                    updated_at=func.now(3) * 1000,
                 ),
             )
         )
+
+        func.extract("epoch", func.now(3)) * 1000
 
         if conn is not None:
             conn.execute(cmd)
@@ -593,27 +684,37 @@ class SystemDatabase:
         self, workflow_uuid: str, inputs: str, conn: Optional[sa.Connection] = None
     ) -> None:
         cmd = (
-            pg.insert(SystemSchema.workflow_inputs)
+            mysql.insert(SystemSchema.workflow_inputs)
             .values(
                 workflow_uuid=workflow_uuid,
                 inputs=inputs,
             )
-            .on_conflict_do_update(
-                index_elements=["workflow_uuid"],
-                set_=dict(workflow_uuid=SystemSchema.workflow_inputs.c.workflow_uuid),
+            .on_duplicate_key_update(
+                dict(workflow_uuid=SystemSchema.workflow_inputs.c.workflow_uuid),
             )
-            .returning(SystemSchema.workflow_inputs.c.inputs)
+            # .returning(SystemSchema.workflow_inputs.c.inputs)
         )
+        # the pg version returns the inputs to check if they've changed
+        # mysql8 doesn't support returning and those inputs aren't actually used here, so let's skip for now
+        # if conn is not None:
+        #     row = conn.execute(cmd).fetchone()
+        # else:
+        #     with self.engine.begin() as c:
+        #         row = c.execute(cmd).fetchone()
+
+        # if row is not None and row[0] != inputs:
+        #     dbos_logger.warning(
+        #         f"Workflow inputs for {workflow_uuid} changed since the first call! Use the original inputs."
+        #     )
+        #     # TODO: actually changing the input
+
         if conn is not None:
-            row = conn.execute(cmd).fetchone()
+            results = conn.execute(cmd)
         else:
             with self.engine.begin() as c:
-                row = c.execute(cmd).fetchone()
-        if row is not None and row[0] != inputs:
-            dbos_logger.warning(
-                f"Workflow inputs for {workflow_uuid} changed since the first call! Use the original inputs."
-            )
-            # TODO: actually changing the input
+                results = c.execute(cmd)
+        # dbos_logger.info(f"update_workflow_inputs results: {results}")
+
         if workflow_uuid in self._temp_txn_wf_ids:
             # Clean up the single-transaction tracking sets
             self._exported_temp_txn_wf_status.discard(workflow_uuid)
@@ -757,7 +858,7 @@ class SystemDatabase:
         error = result["error"]
         output = result["output"]
         assert error is None or output is None, "Only one of error or output can be set"
-        sql = pg.insert(SystemSchema.operation_outputs).values(
+        sql = sa.insert(SystemSchema.operation_outputs).values(
             workflow_uuid=result["workflow_uuid"],
             function_id=result["function_id"],
             output=output,
@@ -825,15 +926,15 @@ class SystemDatabase:
 
             try:
                 c.execute(
-                    pg.insert(SystemSchema.notifications).values(
+                    sa.insert(SystemSchema.notifications).values(
                         destination_uuid=destination_uuid,
                         topic=topic,
                         message=_serialization.serialize(message),
                     )
                 )
             except DBAPIError as dbapi_error:
-                # Foreign key violation
-                if dbapi_error.orig.sqlstate == "23503":  # type: ignore
+                # Check for foreign key violation
+                if _is_foreign_key_constraint_error(dbapi_error):
                     raise DBOSNonExistentWorkflowError(destination_uuid)
                 raise
             output: OperationResultInternal = {
@@ -894,6 +995,34 @@ class SystemDatabase:
         condition.release()
         self.notifications_map.pop(payload)
 
+        message: Any = self._recv_message(workflow_uuid, function_id, topic)
+
+        with self.engine.begin() as c:
+            self.record_operation_result(
+                {
+                    "workflow_uuid": workflow_uuid,
+                    "function_id": function_id,
+                    "output": _serialization.serialize(
+                        message
+                    ),  # None will be serialized to 'null'
+                    "error": None,
+                },
+                conn=c,
+            )
+
+        return message
+
+    def _recv_message(self, workflow_uuid, function_id, topic):
+        if "postgresql" == self.db_type:
+            return self._recv_message_pg(workflow_uuid, function_id, topic)
+        elif "mysql" == self.db_type:
+            return self._recv_message_mysql(workflow_uuid, function_id, topic)
+        else:
+            raise Exception(
+                f"Cannot receive message for unsupported database type: {self.db_type}"
+            )
+
+    def _recv_message_pg(self, workflow_uuid, function_id, topic) -> Any:
         # Transactionally consume and return the message if it's in the database, otherwise return null.
         with self.engine.begin() as c:
             oldest_entry_cte = (
@@ -923,23 +1052,55 @@ class SystemDatabase:
                 .returning(SystemSchema.notifications.c.message)
             )
             rows = c.execute(delete_stmt).fetchall()
-            message: Any = None
-            if len(rows) > 0:
-                message = _serialization.deserialize(rows[0][0])
-            self.record_operation_result(
-                {
-                    "workflow_uuid": workflow_uuid,
-                    "function_id": function_id,
-                    "output": _serialization.serialize(
-                        message
-                    ),  # None will be serialized to 'null'
-                    "error": None,
-                },
-                conn=c,
+        message: Any = None
+        if len(rows) > 0:
+            message = _serialization.deserialize(rows[0][0])
+
+        return message
+
+    def _recv_message_mysql(self, workflow_uuid, function_id, topic) -> Any:
+        # Transactionally consume and return the message if it's in the database, otherwise return null.
+        message: Any = None
+
+        with self.engine.begin() as c:
+            select_stmt = (
+                sa.select(
+                    SystemSchema.notifications.c.destination_uuid,
+                    SystemSchema.notifications.c.topic,
+                    SystemSchema.notifications.c.message,
+                    SystemSchema.notifications.c.created_at_epoch_ms,
+                )
+                .where(
+                    SystemSchema.notifications.c.destination_uuid == workflow_uuid,
+                    SystemSchema.notifications.c.topic == topic,
+                )
+                .order_by(SystemSchema.notifications.c.created_at_epoch_ms.asc())
+                .limit(1)
             )
+            oldest_message_results = c.execute(select_stmt).fetchall()
+
+            if len(oldest_message_results) == 1:
+                dest_uuid, topic, stored_message, created_at_epoch_ms = (
+                    oldest_message_results[0]
+                )
+
+                dbos_logger.info(f"found message to receive: {stored_message}")
+                delete_stmt = sa.delete(SystemSchema.notifications).where(
+                    SystemSchema.notifications.c.destination_uuid == dest_uuid,
+                    SystemSchema.notifications.c.topic == topic,
+                    SystemSchema.notifications.c.created_at_epoch_ms
+                    == created_at_epoch_ms,
+                )
+                delete_results = c.execute(delete_stmt)
+                assert delete_results.rowcount == 1, "Expected 1 row to be deleted"
+
+                if stored_message is not None:
+                    message = _serialization.deserialize(stored_message)
+
         return message
 
     def _notification_listener(self) -> None:
+        # TODO implement a notification subscription system based on polling for MySQL
         while self._run_background_processes:
             try:
                 # since we're using the psycopg connection directly, we need a url without the "+pycopg" suffix
@@ -1045,18 +1206,8 @@ class SystemDatabase:
             else:
                 dbos_logger.debug(f"Running set_event, id: {function_id}, key: {key}")
 
-            c.execute(
-                pg.insert(SystemSchema.workflow_events)
-                .values(
-                    workflow_uuid=workflow_uuid,
-                    key=key,
-                    value=_serialization.serialize(message),
-                )
-                .on_conflict_do_update(
-                    index_elements=["workflow_uuid", "key"],
-                    set_={"value": _serialization.serialize(message)},
-                )
-            )
+            self._insert_event(c, workflow_uuid, key, message)
+
             output: OperationResultInternal = {
                 "workflow_uuid": workflow_uuid,
                 "function_id": function_id,
@@ -1064,6 +1215,43 @@ class SystemDatabase:
                 "error": None,
             }
             self.record_operation_result(output, conn=c)
+
+    def _insert_event(self, c, workflow_uuid, key, message):
+        if "postgresql" == self.db_type:
+            self._insert_event_pg(c, workflow_uuid, key, message)
+        elif "mysql" == self.db_type:
+            self._insert_event_mysql(c, workflow_uuid, key, message)
+        else:
+            raise Exception(
+                f"Cannot insert event for unsupported database type: {self.db_type}"
+            )
+
+    def _insert_event_pg(self, c, workflow_uuid, key, message):
+        c.execute(
+            pg.insert(SystemSchema.workflow_events)
+            .values(
+                workflow_uuid=workflow_uuid,
+                key=key,
+                value=_serialization.serialize(message),
+            )
+            .on_conflict_do_update(
+                index_elements=["workflow_uuid", "key"],
+                set_={"value": _serialization.serialize(message)},
+            )
+        )
+
+    def _insert_event_mysql(self, c, workflow_uuid, key, message):
+        c.execute(
+            mysql.insert(SystemSchema.workflow_events)
+            .values(
+                workflow_uuid=workflow_uuid,
+                key=key,
+                value=_serialization.serialize(message),
+            )
+            .on_duplicate_key_update(
+                {"value": _serialization.serialize(message)},
+            )
+        )
 
     def get_event(
         self,
@@ -1429,6 +1617,7 @@ class SystemDatabase:
 
 
 def reset_system_database(config: ConfigFile) -> None:
+    # TODO: support resetting MySQL
     sysdb_name = (
         config["database"]["sys_db_name"]
         if "sys_db_name" in config["database"] and config["database"]["sys_db_name"]
@@ -1469,3 +1658,19 @@ def reset_system_database(config: ConfigFile) -> None:
     except sa.exc.SQLAlchemyError as e:
         dbos_logger.error(f"Error resetting system database: {str(e)}")
         raise e
+
+
+def _is_foreign_key_constraint_error(dbapi_error: DBAPIError) -> bool:
+    """Check if the given DBAPIError is a foreign key constraint error."""
+
+    return (
+        isinstance(dbapi_error, sa.exc.IntegrityError)
+        and (
+            hasattr(dbapi_error.orig, "sqlstate")  # postgresql
+            and dbapi_error.orig.sqlstate == "23503"  # type: ignore
+        )
+        or (
+            hasattr(dbapi_error.orig, "args")  # mysql
+            and dbapi_error.orig.args[0] == 1452  # type: ignore
+        )
+    )

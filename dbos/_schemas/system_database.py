@@ -1,6 +1,5 @@
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     Column,
     ForeignKey,
     Index,
@@ -13,6 +12,11 @@ from sqlalchemy import (
     text,
 )
 
+from ._mysql import Expressions
+
+_col_len_workflow_uuid = 36 + 1 + 9  # len(uuid) + delimiter + up to a billion children
+_col_type_workflow_uuid = String(_col_len_workflow_uuid)
+
 
 class SystemSchema:
     ### System table schema
@@ -22,39 +26,39 @@ class SystemSchema:
     workflow_status = Table(
         "workflow_status",
         metadata_obj,
-        Column("workflow_uuid", Text, primary_key=True),
-        Column("status", Text, nullable=True),
-        Column("name", Text, nullable=True),
-        Column("authenticated_user", Text, nullable=True),
-        Column("assumed_role", Text, nullable=True),
-        Column("authenticated_roles", Text, nullable=True),
-        Column("request", Text, nullable=True),
-        Column("output", Text, nullable=True),
-        Column("error", Text, nullable=True),
-        Column("executor_id", Text, nullable=True),
+        Column("workflow_uuid", _col_type_workflow_uuid, primary_key=True),
+        Column("status", String(20), nullable=True),
+        Column("name", String(128), nullable=True),
+        Column("authenticated_user", String(32), nullable=True),
+        Column("assumed_role", String(32), nullable=True),
+        Column("authenticated_roles", String(128), nullable=True),
+        Column("request", String(128), nullable=True),
+        Column("output", String(1024), nullable=True),
+        Column("error", String(1024), nullable=True),
+        Column("executor_id", String(128), nullable=True),
         Column(
             "created_at",
             BigInteger,
             nullable=False,
-            server_default=text("(EXTRACT(epoch FROM now()) * 1000::numeric)::bigint"),
+            server_default=text(Expressions.epoch_time_millis_biginteger),
         ),
         Column(
             "updated_at",
             BigInteger,
             nullable=False,
-            server_default=text("(EXTRACT(epoch FROM now()) * 1000::numeric)::bigint"),
+            server_default=text(Expressions.epoch_time_millis_biginteger),
         ),
-        Column("application_version", Text, nullable=True),
-        Column("application_id", Text, nullable=True),
+        Column("application_version", String(128), nullable=True),
+        Column("application_id", String(128), nullable=True),
         Column("class_name", String(255), nullable=True, server_default=text("NULL")),
         Column("config_name", String(255), nullable=True, server_default=text("NULL")),
         Column(
             "recovery_attempts",
             BigInteger,
             nullable=True,
-            server_default=text("'0'::bigint"),
+            server_default=text("0"),
         ),
-        Column("queue_name", Text),
+        Column("queue_name", String(128)),
         Index("workflow_status_created_at_index", "created_at"),
         Index("workflow_status_executor_id_index", "executor_id"),
     )
@@ -64,7 +68,7 @@ class SystemSchema:
         metadata_obj,
         Column(
             "workflow_uuid",
-            Text,
+            _col_type_workflow_uuid,
             ForeignKey(
                 "workflow_status.workflow_uuid", onupdate="CASCADE", ondelete="CASCADE"
             ),
@@ -81,7 +85,7 @@ class SystemSchema:
         metadata_obj,
         Column(
             "workflow_uuid",
-            Text,
+            _col_type_workflow_uuid,
             ForeignKey(
                 "workflow_status.workflow_uuid", onupdate="CASCADE", ondelete="CASCADE"
             ),
@@ -96,25 +100,25 @@ class SystemSchema:
         metadata_obj,
         Column(
             "destination_uuid",
-            Text,
+            String(36),
             ForeignKey(
                 "workflow_status.workflow_uuid", onupdate="CASCADE", ondelete="CASCADE"
             ),
             nullable=False,
         ),
-        Column("topic", Text, nullable=True),
+        Column("topic", String(128), nullable=True),
         Column("message", Text, nullable=False),
         Column(
             "created_at_epoch_ms",
             BigInteger,
             nullable=False,
-            server_default=text("(EXTRACT(epoch FROM now()) * 1000::numeric)::bigint"),
+            server_default=text(Expressions.epoch_time_millis_biginteger),
         ),
         Column(
             "message_uuid",
-            Text,
+            String(36),
             nullable=False,
-            server_default=text("uuid_generate_v4()"),
+            server_default=text(Expressions.generate_uuid_string),
         ),
         Index("idx_workflow_topic", "destination_uuid", "topic"),
     )
@@ -124,13 +128,13 @@ class SystemSchema:
         metadata_obj,
         Column(
             "workflow_uuid",
-            Text,
+            _col_type_workflow_uuid,
             ForeignKey(
                 "workflow_status.workflow_uuid", onupdate="CASCADE", ondelete="CASCADE"
             ),
             nullable=False,
         ),
-        Column("key", Text, nullable=False),
+        Column("key", String(128), nullable=False),
         Column("value", Text, nullable=False),
         PrimaryKeyConstraint("workflow_uuid", "key"),
     )
@@ -138,7 +142,7 @@ class SystemSchema:
     scheduler_state = Table(
         "scheduler_state",
         metadata_obj,
-        Column("workflow_fn_name", Text, primary_key=True, nullable=False),
+        Column("workflow_fn_name", String(255), primary_key=True, nullable=False),
         Column("last_run_time", BigInteger, nullable=False),
     )
 
@@ -147,20 +151,20 @@ class SystemSchema:
         metadata_obj,
         Column(
             "workflow_uuid",
-            Text,
+            _col_type_workflow_uuid,
             ForeignKey(
                 "workflow_status.workflow_uuid", onupdate="CASCADE", ondelete="CASCADE"
             ),
             nullable=False,
             primary_key=True,
         ),
-        Column("executor_id", Text),
-        Column("queue_name", Text, nullable=False),
+        Column("executor_id", String(128)),
+        Column("queue_name", String(128), nullable=False),
         Column(
             "created_at_epoch_ms",
             BigInteger,
             nullable=False,
-            server_default=text("(EXTRACT(epoch FROM now()) * 1000::numeric)::bigint"),
+            server_default=text(Expressions.epoch_time_millis_biginteger),
         ),
         Column(
             "started_at_epoch_ms",
