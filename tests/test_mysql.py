@@ -1,5 +1,6 @@
 import datetime
 import logging
+import os
 import threading
 import time
 import uuid
@@ -16,6 +17,7 @@ from dbos._schemas.system_database import SystemSchema
 
 # noinspection PyProtectedMember
 from dbos._sys_db import GetWorkflowsInput, SystemDatabase, WorkflowStatusString
+from dbos._utils import GlobalParams
 
 
 def test_simple_workflow(dbos_mysql: DBOS, sys_db_mysql: SystemDatabase) -> None:
@@ -1329,3 +1331,74 @@ def test_double_decoration(dbos_mysql: DBOS) -> None:
             pass
 
         my_function()
+
+
+def test_app_version(config_mysql: ConfigFile) -> None:
+    # copied from test_dbos::test_app_version
+
+    config: ConfigFile = config_mysql
+
+    def is_hex(s: str) -> bool:
+        return all(c in "0123456789abcdefABCDEF" for c in s)
+
+    DBOS.destroy(destroy_registry=True)
+    dbos = DBOS(config=config)
+
+    @DBOS.workflow()
+    def workflow_one(x: int) -> int:
+        return x
+
+    @DBOS.workflow()
+    def workflow_two(y: int) -> int:
+        return y
+
+    DBOS.launch()
+
+    # Verify that app version is correctly set to a hex string
+    app_version = GlobalParams.app_version
+    assert len(app_version) > 0
+    assert is_hex(app_version)
+
+    DBOS.destroy(destroy_registry=True)
+    assert GlobalParams.app_version == ""
+    dbos = DBOS(config=config)
+
+    @DBOS.workflow()
+    def workflow_one(x: int) -> int:
+        return x
+
+    @DBOS.workflow()
+    def workflow_two(y: int) -> int:
+        return y
+
+    DBOS.launch()
+
+    # Verify stability--the same workflow source produces the same app version.
+    assert GlobalParams.app_version == app_version
+
+    DBOS.destroy(destroy_registry=True)
+    dbos = DBOS(config=config)
+
+    @DBOS.workflow()
+    def workflow_one(x: int) -> int:
+        return x
+
+    # Verify that changing the workflow source changes the workflow version
+    DBOS.launch()
+    assert GlobalParams.app_version != app_version
+
+    # Verify that version can be overriden with an environment variable
+    app_version = "12345"
+    os.environ["DBOS__APPVERSION"] = app_version
+
+    DBOS.destroy(destroy_registry=True)
+    dbos = DBOS(config=config)
+
+    @DBOS.workflow()
+    def workflow_one(x: int) -> int:
+        return x
+
+    DBOS.launch()
+    assert GlobalParams.app_version == app_version
+
+    del os.environ["DBOS__APPVERSION"]
