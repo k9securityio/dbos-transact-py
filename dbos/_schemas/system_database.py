@@ -9,12 +9,13 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    UnicodeText,
     text,
 )
 
 from ._mysql import Expressions
 
-_col_len_workflow_uuid = 36 + 1 + 9  # len(uuid) + delimiter + up to a billion children
+_col_len_workflow_uuid = 100  # len(uuid) + delimiter + up to a billion children
 _col_type_workflow_uuid = String(_col_len_workflow_uuid)
 
 
@@ -32,9 +33,9 @@ class SystemSchema:
         Column("authenticated_user", String(32), nullable=True),
         Column("assumed_role", String(32), nullable=True),
         Column("authenticated_roles", String(128), nullable=True),
-        Column("request", String(128), nullable=True),
-        Column("output", String(1024), nullable=True),
-        Column("error", String(1024), nullable=True),
+        Column("request", UnicodeText(), nullable=True),
+        Column("output", UnicodeText(), nullable=True),
+        Column("error", UnicodeText(), nullable=True),
         Column("executor_id", String(128), nullable=True),
         Column(
             "created_at",
