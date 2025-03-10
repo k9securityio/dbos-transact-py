@@ -78,6 +78,35 @@ def test_enqueue(dbos_mysql: DBOS, sys_db_mysql: SystemDatabase) -> None:
     assert actual_result == test_param
 
 
+def test_workflow_status_supports_very_long_text(
+    dbos_mysql: DBOS, sys_db_mysql: SystemDatabase
+):
+    very_verbose_message: str = "A" * 65000
+
+    @DBOS.step()
+    def step_with_very_verbose_input(msg: str) -> str:
+        return "success"
+
+    @DBOS.step()
+    def step_with_very_verbose_output(msg: str) -> str:
+        nonlocal very_verbose_message
+        return very_verbose_message
+
+    @DBOS.step()
+    def step_with_very_verbose_exception() -> str:
+        nonlocal very_verbose_message
+        raise Exception(very_verbose_message)
+
+    result = step_with_very_verbose_input(very_verbose_message)
+    assert result == "success"
+
+    try:
+        step_with_very_verbose_exception()
+        assert False, "Expected exception to be thrown"
+    except Exception as e:
+        assert e.args[0] == very_verbose_message
+
+
 def test_dbos_simple_workflow(dbos_mysql: DBOS) -> None:
     # copied from test_debos.py::test_simple_workflow
 
