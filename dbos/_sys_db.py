@@ -1427,6 +1427,16 @@ class SystemDatabase:
         )
 
     def enqueue(self, workflow_id: str, queue_name: str) -> None:
+        if "postgresql" == self.db_type:
+            return self._enqueue_pg(workflow_id, queue_name)
+        elif "mysql" == self.db_type:
+            return self._enqueue_mysql(workflow_id, queue_name)
+        else:
+            raise Exception(
+                f"Cannot receive message for unsupported database type: {self.db_type}"
+            )
+
+    def _enqueue_pg(self, workflow_id, queue_name):
         with self.engine.begin() as c:
             c.execute(
                 pg.insert(SystemSchema.workflow_queue)
@@ -1435,6 +1445,15 @@ class SystemDatabase:
                     queue_name=queue_name,
                 )
                 .on_conflict_do_nothing()
+            )
+
+    def _enqueue_mysql(self, workflow_id, queue_name):
+        with self.engine.begin() as c:
+            c.execute(
+                mysql.insert(SystemSchema.workflow_queue).values(
+                    workflow_uuid=workflow_id,
+                    queue_name=queue_name,
+                )
             )
 
     def start_queued_workflows(self, queue: "Queue", executor_id: str) -> List[str]:

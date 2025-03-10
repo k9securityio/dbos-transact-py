@@ -1,6 +1,7 @@
 import datetime
 import logging
 import os
+import random
 import threading
 import time
 import uuid
@@ -10,7 +11,14 @@ import pytest
 import sqlalchemy as sa
 
 # noinspection PyProtectedMember
-from dbos import DBOS, ConfigFile, SetWorkflowID, WorkflowHandle, _workflow_commands
+from dbos import (
+    DBOS,
+    ConfigFile,
+    Queue,
+    SetWorkflowID,
+    WorkflowHandle,
+    _workflow_commands,
+)
 from dbos._context import assert_current_dbos_context, get_local_dbos_context
 from dbos._error import DBOSConflictingRegistrationError, DBOSMaxStepRetriesExceeded
 from dbos._schemas.system_database import SystemSchema
@@ -39,6 +47,31 @@ def test_simple_workflow(dbos_mysql: DBOS, sys_db_mysql: SystemDatabase) -> None
     assert len(output) == 1, f"Expected list length to be 1, but got {len(output)}"
 
     assert output[0] is not None, "Expected output to be not None"
+
+
+def test_enqueue(dbos_mysql: DBOS, sys_db_mysql: SystemDatabase) -> None:
+    sys_db = sys_db_mysql
+    print(sys_db.engine)
+    assert sys_db.engine is not None
+
+    @DBOS.workflow()
+    def simple_workflow(param: str) -> str:
+        print(f"Executed simple workflow asynchronously with param: {param}")
+        return param
+
+    # run the workflow
+    queue: Queue = Queue("test_enqueue")
+    test_param = f"param-{random.randint(1, 1000)}"
+    handle = queue.enqueue(simple_workflow, param=test_param)
+    assert handle is not None
+    time.sleep(0.25)
+
+    # get the workflow list
+    output = _workflow_commands.list_workflows(sys_db)
+    assert len(output) == 1, f"Expected list length to be 1, but got {len(output)}"
+
+    actual_result: str = handle.get_result()
+    assert actual_result == test_param
 
 
 def test_dbos_simple_workflow(dbos_mysql: DBOS) -> None:
