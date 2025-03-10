@@ -17,6 +17,7 @@ from dbos import (
     Queue,
     SetWorkflowID,
     WorkflowHandle,
+    WorkflowStatus,
     _workflow_commands,
 )
 from dbos._context import assert_current_dbos_context, get_local_dbos_context
@@ -62,7 +63,7 @@ def test_enqueue(dbos_mysql: DBOS, sys_db_mysql: SystemDatabase) -> None:
     # run the workflow
     queue: Queue = Queue("test_enqueue")
     test_param = f"param-{random.randint(1, 1000)}"
-    handle = queue.enqueue(simple_workflow, param=test_param)
+    handle: WorkflowHandle = queue.enqueue(simple_workflow, param=test_param)
     assert handle is not None
     time.sleep(0.25)
 
@@ -71,6 +72,9 @@ def test_enqueue(dbos_mysql: DBOS, sys_db_mysql: SystemDatabase) -> None:
     assert len(output) == 1, f"Expected list length to be 1, but got {len(output)}"
 
     actual_result: str = handle.get_result()
+    actual_status: WorkflowStatus = handle.get_status()
+
+    assert actual_status.status == "SUCCESS"
     assert actual_result == test_param
 
 
