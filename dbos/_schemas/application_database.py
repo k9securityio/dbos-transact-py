@@ -7,7 +7,7 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
     String,
     Table,
-    Text,
+    UnicodeText,
     text,
 )
 
@@ -23,10 +23,10 @@ class ApplicationSchema:
         metadata_obj,
         Column("workflow_uuid", String(46)),
         Column("function_id", Integer),
-        Column("output", Text, nullable=True),
-        Column("error", Text, nullable=True),
+        Column("output", UnicodeText, nullable=True),
+        Column("error", UnicodeText, nullable=True),
         Column("txn_id", String(128), nullable=True),
-        Column("txn_snapshot", Text),
+        Column("txn_snapshot", UnicodeText),
         Column("executor_id", String(128), nullable=True),
         Column(
             "created_at",

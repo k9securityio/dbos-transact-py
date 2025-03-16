@@ -8,7 +8,6 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
     String,
     Table,
-    Text,
     UnicodeText,
     text,
 )
@@ -76,8 +75,8 @@ class SystemSchema:
             nullable=False,
         ),
         Column("function_id", Integer, nullable=False),
-        Column("output", Text, nullable=True),
-        Column("error", Text, nullable=True),
+        Column("output", UnicodeText, nullable=True),
+        Column("error", UnicodeText, nullable=True),
         PrimaryKeyConstraint("workflow_uuid", "function_id"),
     )
 
@@ -93,7 +92,7 @@ class SystemSchema:
             primary_key=True,
             nullable=False,
         ),
-        Column("inputs", Text, nullable=False),
+        Column("inputs", UnicodeText, nullable=False),
     )
 
     notifications = Table(
@@ -108,7 +107,7 @@ class SystemSchema:
             nullable=False,
         ),
         Column("topic", String(128), nullable=True),
-        Column("message", Text, nullable=False),
+        Column("message", UnicodeText, nullable=False),
         Column(
             "created_at_epoch_ms",
             BigInteger,
@@ -136,7 +135,7 @@ class SystemSchema:
             nullable=False,
         ),
         Column("key", String(128), nullable=False),
-        Column("value", Text, nullable=False),
+        Column("value", UnicodeText, nullable=False),
         PrimaryKeyConstraint("workflow_uuid", "key"),
     )
 
