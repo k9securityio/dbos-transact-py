@@ -39,7 +39,7 @@ from ._error import (
 )
 from ._logger import dbos_logger
 from ._registrations import DEFAULT_MAX_RECOVERY_ATTEMPTS
-from ._schemas.system_database import SystemSchema
+from ._schemas.system_database import SystemSchema, configure_system_schema_mysql
 
 if TYPE_CHECKING:
     from ._queue import Queue
@@ -252,6 +252,7 @@ class SystemDatabase:
             # for example using CREATE SCHEMA instead of CREATE DATABASE."
             #
             # So no need to create a 'schema' only the 'database'.
+            configure_system_schema_mysql(db_schema_name=sysdb_name)
 
             SystemSchema.metadata_obj.create_all(engine)
 

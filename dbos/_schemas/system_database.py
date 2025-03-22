@@ -19,11 +19,23 @@ _col_type_workflow_uuid = String(_col_len_workflow_uuid)
 
 
 class SystemSchema:
-    ### System table schema
-    metadata_obj = MetaData(schema="dbos")
-    sysdb_suffix = "_dbos_sys"
+    # System table schema
+    metadata_obj: MetaData
+    sysdb_suffix: str = "_dbos_sys"
 
-    workflow_status = Table(
+    workflow_status: Table
+    operation_outputs: Table
+    workflow_inputs: Table
+    notifications: Table
+    workflow_events: Table
+    scheduler_state: Table
+    workflow_queue: Table
+
+
+def configure_system_schema_mysql(db_schema_name: str) -> SystemSchema:
+    SystemSchema.metadata_obj = metadata_obj = MetaData(schema=db_schema_name)
+
+    SystemSchema.workflow_status = Table(
         "workflow_status",
         metadata_obj,
         Column("workflow_uuid", _col_type_workflow_uuid, primary_key=True),
@@ -63,7 +75,7 @@ class SystemSchema:
         Index("workflow_status_executor_id_index", "executor_id"),
     )
 
-    operation_outputs = Table(
+    SystemSchema.operation_outputs = Table(
         "operation_outputs",
         metadata_obj,
         Column(
@@ -80,7 +92,7 @@ class SystemSchema:
         PrimaryKeyConstraint("workflow_uuid", "function_id"),
     )
 
-    workflow_inputs = Table(
+    SystemSchema.workflow_inputs = Table(
         "workflow_inputs",
         metadata_obj,
         Column(
@@ -95,7 +107,7 @@ class SystemSchema:
         Column("inputs", UnicodeText, nullable=False),
     )
 
-    notifications = Table(
+    SystemSchema.notifications = Table(
         "notifications",
         metadata_obj,
         Column(
@@ -123,7 +135,7 @@ class SystemSchema:
         Index("idx_workflow_topic", "destination_uuid", "topic"),
     )
 
-    workflow_events = Table(
+    SystemSchema.workflow_events = Table(
         "workflow_events",
         metadata_obj,
         Column(
@@ -139,14 +151,14 @@ class SystemSchema:
         PrimaryKeyConstraint("workflow_uuid", "key"),
     )
 
-    scheduler_state = Table(
+    SystemSchema.scheduler_state = Table(
         "scheduler_state",
         metadata_obj,
         Column("workflow_fn_name", String(255), primary_key=True, nullable=False),
         Column("last_run_time", BigInteger, nullable=False),
     )
 
-    workflow_queue = Table(
+    SystemSchema.workflow_queue = Table(
         "workflow_queue",
         metadata_obj,
         Column(
@@ -175,3 +187,5 @@ class SystemSchema:
             BigInteger(),
         ),
     )
+
+    return SystemSchema
