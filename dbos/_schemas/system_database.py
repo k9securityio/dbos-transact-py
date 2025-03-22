@@ -1,3 +1,5 @@
+from typing import Type
+
 from sqlalchemy import (
     BigInteger,
     Column,
@@ -32,7 +34,7 @@ class SystemSchema:
     workflow_queue: Table
 
 
-def configure_system_schema_mysql(db_schema_name: str) -> SystemSchema:
+def configure_system_schema_mysql(db_schema_name: str) -> Type[SystemSchema]:
     SystemSchema.metadata_obj = metadata_obj = MetaData(schema=db_schema_name)
 
     SystemSchema.workflow_status = Table(

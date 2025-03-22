@@ -1,3 +1,5 @@
+from typing import Type
+
 from sqlalchemy import (
     BigInteger,
     Column,
@@ -16,9 +18,14 @@ from ._mysql import Expressions
 
 class ApplicationSchema:
     schema = "dbos"
-    metadata_obj = MetaData(schema=schema)
+    metadata_obj: MetaData
+    transaction_outputs: Table
 
-    transaction_outputs = Table(
+
+def configure_application_schema_mysql(db_schema_name: str) -> Type[ApplicationSchema]:
+    ApplicationSchema.metadata_obj = metadata_obj = MetaData(schema=db_schema_name)
+
+    ApplicationSchema.transaction_outputs = Table(
         "transaction_outputs",
         metadata_obj,
         Column("workflow_uuid", String(46)),
@@ -37,3 +44,4 @@ class ApplicationSchema:
         Index("transaction_outputs_created_at_index", "created_at"),
         PrimaryKeyConstraint("workflow_uuid", "function_id"),
     )
+    return ApplicationSchema

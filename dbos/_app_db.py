@@ -10,7 +10,10 @@ from ._dbos_config import ConfigFile
 from ._error import DBOSWorkflowConflictIDError
 from ._logger import dbos_logger
 from ._schemas._mysql import Expressions
-from ._schemas.application_database import ApplicationSchema
+from ._schemas.application_database import (
+    ApplicationSchema,
+    configure_application_schema_mysql,
+)
 
 
 class TransactionResultInternal(TypedDict):
@@ -65,6 +68,7 @@ class ApplicationDatabase:
                 database=app_db_name,
             )
         elif "mysql" == self.db_type:
+            configure_application_schema_mysql(db_schema_name=app_db_name)
             db_url_args = {
                 "drivername": "mysql+pymysql",
                 "username": config["database"]["username"],
