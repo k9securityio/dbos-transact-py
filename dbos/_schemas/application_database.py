@@ -14,6 +14,7 @@ from sqlalchemy import (
 )
 
 from ._mysql import Expressions
+from .system_database import _col_type_workflow_uuid
 
 
 class ApplicationSchema:
@@ -33,7 +34,7 @@ def configure_application_schema_mysql(db_schema_name: str) -> Type[ApplicationS
     ApplicationSchema.transaction_outputs = Table(
         "transaction_outputs",
         metadata_obj,
-        Column("workflow_uuid", String(46)),
+        Column("workflow_uuid", _col_type_workflow_uuid),
         Column("function_id", Integer),
         Column("output", UnicodeText, nullable=True),
         Column("error", UnicodeText, nullable=True),
