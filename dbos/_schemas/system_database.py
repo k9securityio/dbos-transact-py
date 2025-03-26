@@ -35,6 +35,10 @@ class SystemSchema:
 
 
 def configure_system_schema_mysql(db_schema_name: str) -> Type[SystemSchema]:
+    """Configure the schema for the 'System' tables, indices, and other database objects.
+    :param db_schema_name: The name of the MySQL database (aka schema) to use. Note that in MySQL, 'database' and 'schema' are literally synonyms.
+    :return: The configured SystemSchema object.
+    """
     SystemSchema.metadata_obj = metadata_obj = MetaData(schema=db_schema_name)
 
     SystemSchema.workflow_status = Table(
