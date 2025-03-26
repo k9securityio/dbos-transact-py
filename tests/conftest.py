@@ -52,13 +52,8 @@ def default_config_mysql() -> ConfigFile:
             "port": 3306,
             "username": "root",
             "password": "root",
-            # Synchronize app and sys db names to what is defined in their respective Schema objects
-            # 1. A MySQL 'database' and 'schema' are synonymous.
-            # 2. SystemSchema and ApplicationSchema both have a hardcoded 'dbos' schema
-            #
-            # So we need to explicitly configure where the schema/databases are to what is defined in the *Schema
-            "app_db_name": "dbos",
-            "sys_db_name": "dbos",
+            "app_db_name": "dbos_mysql",
+            "sys_db_name": "dbos_mysql",
         },
         "runtimeConfig": {
             "start": ["python3 main.py"],
