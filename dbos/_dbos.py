@@ -417,12 +417,13 @@ class DBOS:
             self._executor.submit(startup_recovery_thread, self, workflow_ids)
 
             # Listen to notifications
-            notification_listener_thread = threading.Thread(
-                target=self._sys_db._notification_listener,
-                daemon=True,
-            )
-            notification_listener_thread.start()
-            self._background_threads.append(notification_listener_thread)
+            if self._sys_db.is_notification_listener_enabled():
+                notification_listener_thread = threading.Thread(
+                    target=self._sys_db._notification_listener,
+                    daemon=True,
+                )
+                notification_listener_thread.start()
+                self._background_threads.append(notification_listener_thread)
 
             # Start flush workflow buffers thread
             flush_workflow_buffers_thread = threading.Thread(

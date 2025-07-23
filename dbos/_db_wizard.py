@@ -7,7 +7,7 @@ import docker  # type: ignore
 import typer
 import yaml
 from rich import print
-from sqlalchemy import URL, create_engine, text
+from sqlalchemy import URL, Engine, create_engine, text
 
 if TYPE_CHECKING:
     from ._dbos_config import ConfigFile
@@ -171,28 +171,46 @@ def _check_docker_installed() -> bool:
 
 
 def _check_db_connectivity(config: "ConfigFile") -> Optional[Exception]:
-    postgres_db_url = URL.create(
-        "postgresql+psycopg",
-        username=config["database"]["username"],
-        password=config["database"]["password"],
-        host=config["database"]["hostname"],
-        port=config["database"]["port"],
-        database="postgres",
-        query={"connect_timeout": "1"},
-    )
-    postgres_db_engine = create_engine(postgres_db_url)
-    try:
-        with postgres_db_engine.connect() as conn:
-            val = conn.execute(text("SELECT 1")).scalar()
-            if val != 1:
-                dbos_logger.error(
-                    f"Unexpected value returned from database: expected 1, received {val}"
-                )
-                return Exception()
-    except Exception as e:
-        return e
-    finally:
-        postgres_db_engine.dispose()
+    database_type = config["database"].get("type", "postgresql")
+
+    engine: Optional[Engine] = None
+    if "postgresql" == database_type:
+        postgres_db_url = URL.create(
+            "postgresql+psycopg",
+            username=config["database"]["username"],
+            password=config["database"]["password"],
+            host=config["database"]["hostname"],
+            port=config["database"]["port"],
+            database="postgres",
+            query={"connect_timeout": "1"},
+        )
+        engine = create_engine(postgres_db_url)
+    elif "mysql" == database_type:
+        db_url_args = {
+            "drivername": "mysql+pymysql",
+            "username": config["database"]["username"],
+            "password": config["database"]["password"],
+            "host": config["database"]["hostname"],
+            "port": config["database"]["port"],
+        }
+        mysql_db_url = URL.create(**db_url_args)
+        engine = create_engine(mysql_db_url)
+
+    if engine:
+        try:
+            with engine.connect() as conn:
+                val = conn.execute(text("SELECT 1")).scalar()
+                if val != 1:
+                    dbos_logger.error(
+                        f"Unexpected value returned from database: expected 1, received {val}"
+                    )
+                    return Exception()
+        except Exception as e:
+            return e
+        finally:
+            engine.dispose()
+    else:
+        return Exception(f"Could not create engine for {database_type} database")
 
     return None
 
